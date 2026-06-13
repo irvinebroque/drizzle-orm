@@ -11,6 +11,7 @@ import {
 } from '~/d1-object/index.ts';
 import { drizzle as drizzleD1 } from '~/d1/index.ts';
 import { drizzle as durableSqlite } from '~/durable-sqlite/index.ts';
+import { integer, sqliteTable } from '~/sqlite-core/index.ts';
 
 const client = new Database(':memory:');
 const bunClient = new BunDatabase(':memory:');
@@ -18,6 +19,10 @@ declare const d1: D1Database;
 declare const durableSql: DurableObjectStorage;
 declare const durableObjectState: DurableObjectState;
 declare const durableObjectEnv: Record<string, never>;
+
+const users = sqliteTable('users', {
+	id: integer(),
+});
 
 export const db = drizzleBetterSqlite3(client);
 export const bunDb = drizzleBun(bunClient);
@@ -35,8 +40,10 @@ export class TestD1Object extends DrizzleD1Object<typeof durableObjectEnv> {
 	}
 }
 
-const d1ObjectSession = createD1ObjectSession<TestD1Object>({
+const d1ObjectSession = createD1ObjectSession<TestD1Object, { users: typeof users }>({
 	runDrizzleObjectMethod: async () => ({ value: [], bookmark: 'bookmark' }),
-});
+}, { schema: { users } });
 
 Expect<Equal<ReturnType<typeof d1ObjectSession.client.listPosts>, Promise<{ id: number }[]>>>();
+const d1ObjectUsers = d1ObjectSession.db.query.users.findMany();
+Expect<Equal<Awaited<typeof d1ObjectUsers>, { id: number | null }[]>>();

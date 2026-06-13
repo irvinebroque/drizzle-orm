@@ -42,6 +42,37 @@ export async function fetch(request: Request, env: Env) {
 
 `createD1ObjectSession()` sends the current bookmark with each method call, waits for that bookmark inside the object before running the method, and stores the updated bookmark returned by the object. Calls through one session are serialized to preserve causal order. Use a separate session when calls are intentionally independent.
 
+## Remote Drizzle sessions
+
+Use `session.db` when application code should keep Drizzle's normal query syntax while SQL still executes inside the Durable Object.
+
+```ts
+import { createD1ObjectSession } from 'drizzle-orm/d1-object';
+import * as schema from './schema';
+
+export async function fetch(request: Request, env: Env) {
+	const blog = createD1ObjectSession<BlogDatabase, typeof schema>(
+		env.BLOG_DATABASE.getByName('blog'),
+		{
+			schema,
+			bookmark: request.headers.get('x-d1-bookmark'),
+		},
+	);
+
+	const posts = await blog.db.query.posts.findMany({
+		limit: 10,
+	});
+
+	return Response.json({ posts }, {
+		headers: {
+			'x-d1-bookmark': blog.getBookmark() ?? '',
+		},
+	});
+}
+```
+
+`session.client` and `session.db` share bookmark state and serialize calls through the same queue, so they can be mixed safely inside one request. Direct Drizzle writes are marked as writes in the query RPC and forward from replicas to the primary object. Multi-statement transactions should remain Durable Object methods so the whole transaction runs inside one object invocation.
+
 The low-level `db.d1.waitForBookmark()` and `db.d1.getCurrentBookmark()` helpers remain available when an application needs custom bookmark handling.
 
 ## Read replication

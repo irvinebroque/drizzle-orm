@@ -105,30 +105,30 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 			return { ...response, forwarded: true };
 		}
 
+		await this.waitForD1ObjectBookmark(request.bookmark);
+
 		const cursor = this.ctx.storage.sql.exec(request.sql, ...request.params);
 		if (request.method === 'run') {
-			return this.withWriteBookmark(this.createQueryResponse([], cursor, false), request.write);
+			return this.withQueryBookmark(this.createQueryResponse([], cursor, false));
 		}
 
 		if (request.method === 'get') {
 			if (request.responseMode === 'array') {
 				const row = cursor.raw<SqlStorageValue[]>().next();
-				return this.withWriteBookmark(
+				return this.withQueryBookmark(
 					this.createQueryResponse(row.done ? [] : [row.value], cursor, false),
-					request.write,
 				);
 			}
 			const row = cursor.next();
-			return this.withWriteBookmark(
+			return this.withQueryBookmark(
 				this.createQueryResponse(row.done ? [] : [row.value], cursor, false),
-				request.write,
 			);
 		}
 
 		const rows = request.responseMode === 'array'
 			? Array.from(cursor.raw<SqlStorageValue[]>())
 			: cursor.toArray();
-		return this.withWriteBookmark(this.createQueryResponse(rows, cursor, false), request.write);
+		return this.withQueryBookmark(this.createQueryResponse(rows, cursor, false));
 	}
 
 	async applyDrizzleMigrations(config: D1ObjectMigrationConfig): Promise<D1ObjectMigrationResult> {
@@ -196,11 +196,7 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 		await storage.waitForBookmark(bookmark);
 	}
 
-	private async withWriteBookmark(response: D1ObjectQueryResponse, write: boolean): Promise<D1ObjectQueryResponse> {
-		if (!write) {
-			return response;
-		}
-
+	private async withQueryBookmark(response: D1ObjectQueryResponse): Promise<D1ObjectQueryResponse> {
 		return {
 			...response,
 			bookmark: await this.ctx.storage.getCurrentBookmark(),
