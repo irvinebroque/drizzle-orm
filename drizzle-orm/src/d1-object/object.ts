@@ -2,6 +2,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { drizzle } from './driver.ts';
+import { D1ObjectReplicaWriteError } from './errors.ts';
 import { migrate } from './migrator.ts';
 import { isD1ObjectReplica, setupD1Object } from './setup.ts';
 import type {
@@ -26,7 +27,7 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 
 	protected assertPrimary(operation = 'operation'): void {
 		if (this.isReplica()) {
-			throw new Error(`D1 object ${operation} must run on the primary object`);
+			throw new D1ObjectReplicaWriteError(`D1 object ${operation} must run on the primary object`);
 		}
 	}
 
@@ -58,10 +59,16 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 		if (request.method === 'get') {
 			if (request.responseMode === 'array') {
 				const row = cursor.raw<SqlStorageValue[]>().next();
-				return this.withWriteBookmark(this.createQueryResponse(row.done ? [] : [row.value], cursor, false), request.write);
+				return this.withWriteBookmark(
+					this.createQueryResponse(row.done ? [] : [row.value], cursor, false),
+					request.write,
+				);
 			}
 			const row = cursor.next();
-			return this.withWriteBookmark(this.createQueryResponse(row.done ? [] : [row.value], cursor, false), request.write);
+			return this.withWriteBookmark(
+				this.createQueryResponse(row.done ? [] : [row.value], cursor, false),
+				request.write,
+			);
 		}
 
 		const rows = request.responseMode === 'array'

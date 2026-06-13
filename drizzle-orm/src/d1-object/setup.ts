@@ -12,12 +12,17 @@ export function setupD1Object(ctx: DurableObjectState, config: D1ObjectRuntimeCo
 	configuredStates.add(ctx);
 
 	ctx.blockConcurrencyWhile(async () => {
-		if (config.readReplication === false) {
+		const d1Ctx = ctx as D1ObjectState;
+		if (d1Ctx.primaryStub) {
 			return;
 		}
 
-		const d1Ctx = ctx as D1ObjectState;
-		if (d1Ctx.primaryStub) {
+		if (typeof d1Ctx.configureReadReplication !== 'function') {
+			throw new Error('D1 read replication is not available in this runtime');
+		}
+
+		if (config.readReplication === false) {
+			await d1Ctx.configureReadReplication({ mode: 'disabled' });
 			return;
 		}
 
@@ -27,12 +32,9 @@ export function setupD1Object(ctx: DurableObjectState, config: D1ObjectRuntimeCo
 				? await readReplication.enabled(ctx)
 				: readReplication.enabled;
 			if (!enabled) {
+				await d1Ctx.configureReadReplication({ mode: 'disabled' });
 				return;
 			}
-		}
-
-		if (typeof d1Ctx.configureReadReplication !== 'function') {
-			throw new Error('D1 read replication is not available in this runtime');
 		}
 
 		await d1Ctx.configureReadReplication({ mode: readReplication.mode });

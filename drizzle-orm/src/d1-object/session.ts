@@ -5,7 +5,7 @@ import { entityKind } from '~/entity.ts';
 import type { Logger } from '~/logger.ts';
 import { NoopLogger } from '~/logger.ts';
 import type { RelationalSchemaConfig, TablesRelationalConfig } from '~/relations.ts';
-import { fillPlaceholders, type Query } from '~/sql/sql.ts';
+import { fillPlaceholders, type Query, type SQL } from '~/sql/sql.ts';
 import { type SQLiteSyncDialect, SQLiteTransaction } from '~/sqlite-core/index.ts';
 import type { SelectedFieldsOrdered } from '~/sqlite-core/query-builders/select.types.ts';
 import {
@@ -16,6 +16,7 @@ import {
 } from '~/sqlite-core/session.ts';
 import { SQLitePreparedQuery as PreparedQueryBase } from '~/sqlite-core/session.ts';
 import { mapResultRow } from '~/utils.ts';
+import { D1ObjectReplicaWriteError } from './errors.ts';
 import { isD1ObjectReplica } from './setup.ts';
 import type { D1ObjectQueryEvent } from './types.ts';
 
@@ -86,10 +87,23 @@ export class SQLiteD1ObjectSession<
 		_config?: SQLiteTransactionConfig,
 	): T {
 		if (isD1ObjectReplica(this.ctx)) {
-			throw new Error('D1 object transactions must run on the primary object');
+			throw new D1ObjectReplicaWriteError('D1 object transactions must run on the primary object');
 		}
 		const tx = new SQLiteD1ObjectTransaction('sync', this.dialect, this, this.schema);
 		return this.ctx.storage.transactionSync(() => transaction(tx));
+	}
+
+	override async count(query: SQL): Promise<number> {
+		const result = this.prepareOneTimeQuery(
+			this.dialect.sqlToQuery(query),
+			undefined,
+			'run',
+			false,
+			undefined,
+			{ type: 'select', tables: [] },
+		).values() as [[number]];
+
+		return result[0][0];
 	}
 }
 
@@ -110,14 +124,16 @@ export class SQLiteD1ObjectTransaction<
 	}
 }
 
-export class SQLiteD1ObjectPreparedQuery<T extends PreparedQueryConfig = PreparedQueryConfig> extends PreparedQueryBase<{
-	type: 'sync';
-	run: SqlStorageCursor<Record<string, SqlStorageValue>>;
-	all: T['all'];
-	get: T['get'];
-	values: T['values'];
-	execute: T['execute'];
-}> {
+export class SQLiteD1ObjectPreparedQuery<T extends PreparedQueryConfig = PreparedQueryConfig>
+	extends PreparedQueryBase<{
+		type: 'sync';
+		run: SqlStorageCursor<Record<string, SqlStorageValue>>;
+		all: T['all'];
+		get: T['get'];
+		values: T['values'];
+		execute: T['execute'];
+	}>
+{
 	static override readonly [entityKind]: string = 'SQLiteD1ObjectPreparedQuery';
 
 	constructor(
@@ -221,7 +237,7 @@ export class SQLiteD1ObjectPreparedQuery<T extends PreparedQueryConfig = Prepare
 			return;
 		}
 		if (isD1ObjectReplica(this.ctx)) {
-			throw new Error(
+			throw new D1ObjectReplicaWriteError(
 				'D1 object write queries must run on the primary object. Route known writes to the primary or use an explicit primary-forwarding method.',
 			);
 		}

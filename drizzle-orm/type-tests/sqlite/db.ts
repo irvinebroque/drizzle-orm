@@ -2,8 +2,8 @@ import Database from 'better-sqlite3';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { drizzle as drizzleBetterSqlite3 } from '~/better-sqlite3/index.ts';
 import { drizzle as drizzleBun } from '~/bun-sqlite/index.ts';
-import { drizzle as drizzleD1 } from '~/d1/index.ts';
 import { drizzle as drizzleD1Object, DrizzleD1Object, setupD1Object } from '~/d1-object/index.ts';
+import { drizzle as drizzleD1 } from '~/d1/index.ts';
 import { drizzle as durableSqlite } from '~/durable-sqlite/index.ts';
 
 const client = new Database(':memory:');

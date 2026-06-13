@@ -1,11 +1,15 @@
 /// <reference types="@cloudflare/workers-types" />
 
-import { sql } from '~/sql/sql.ts';
+import { expect, test, vi } from 'vitest';
 import { drizzle } from '~/d1-object/driver.ts';
+import { D1ObjectReplicaWriteError, isD1ObjectReplicaWriteError } from '~/d1-object/errors.ts';
+import { migrate } from '~/d1-object/migrator.ts';
 import { SQLiteD1ObjectSession } from '~/d1-object/session.ts';
 import { setupD1Object } from '~/d1-object/setup.ts';
+import { isD1ObjectMutationSql } from '~/d1-object/utils.ts';
+import { sql } from '~/sql/sql.ts';
+import { integer, sqliteTable } from '~/sqlite-core';
 import { SQLiteSyncDialect } from '~/sqlite-core/dialect.ts';
-import { expect, test, vi } from 'vitest';
 
 vi.mock('cloudflare:workers', () => ({
 	DurableObject: class {
@@ -18,6 +22,10 @@ vi.mock('cloudflare:workers', () => ({
 		}
 	},
 }));
+
+const users = sqliteTable('users', {
+	id: integer(),
+});
 
 class FakeCursor<T extends Record<string, SqlStorageValue>> {
 	columnNames: string[] = [];
@@ -49,10 +57,12 @@ function createState(options: {
 	primaryStub?: unknown;
 	rows?: Record<string, SqlStorageValue>[];
 	rawRows?: SqlStorageValue[][];
+	configureReadReplication?: (config: { mode: 'auto' | 'disabled' }) => Promise<void>;
 } = {}) {
 	const calls: { sql: string; params: unknown[] }[] = [];
 	const state = {
 		primaryStub: options.primaryStub,
+		configureReadReplication: options.configureReadReplication,
 		storage: {
 			sql: {
 				exec(query: string, ...params: unknown[]) {
@@ -76,44 +86,57 @@ function createState(options: {
 }
 
 test('setupD1Object configures read replication by default on primary', async () => {
-	let configured = false;
+	const configureReadReplication = vi.fn(async () => {});
 	const state = {
 		blockConcurrencyWhile(callback: () => Promise<unknown>) {
 			return callback();
 		},
-		configureReadReplication: async () => {
-			configured = true;
-		},
+		configureReadReplication,
 	} as unknown as DurableObjectState;
 
 	setupD1Object(state);
 	await Promise.resolve();
 
-	expect(configured).toBe(true);
+	expect(configureReadReplication).toHaveBeenCalledWith({ mode: 'auto' });
 });
 
-test('setupD1Object skips read replication when disabled', async () => {
-	let configured = false;
+test('setupD1Object disables read replication when disabled', async () => {
+	const configureReadReplication = vi.fn(async () => {});
 	const state = {
 		blockConcurrencyWhile(callback: () => Promise<unknown>) {
 			return callback();
 		},
-		configureReadReplication: async () => {
-			configured = true;
-		},
+		configureReadReplication,
 	} as unknown as DurableObjectState;
 
 	setupD1Object(state, { readReplication: false });
 	await Promise.resolve();
 
-	expect(configured).toBe(false);
+	expect(configureReadReplication).toHaveBeenCalledWith({ mode: 'disabled' });
 });
 
-test('raw writes throw on replicas', () => {
+test('raw writes expose typed replica write errors through wrapped causes', () => {
 	const { state } = createState({ primaryStub: {} });
 	const db = drizzle(state);
 
-	expect(() => db.run(sql`insert into users (id) values (1)`)).toThrow('Failed to run the query');
+	let thrown: unknown;
+	try {
+		db.run(sql`insert into users (id) values (1)`);
+	} catch (error) {
+		thrown = error;
+	}
+
+	expect(thrown).toBeDefined();
+	expect(thrown).toHaveProperty('message', "Failed to run the query 'insert into users (id) values (1)'");
+	expect((thrown as { cause?: unknown }).cause).toBeInstanceOf(D1ObjectReplicaWriteError);
+	expect(isD1ObjectReplicaWriteError(thrown)).toBe(true);
+});
+
+test('query builder writes throw typed replica write errors directly', () => {
+	const { state } = createState({ primaryStub: {} });
+	const db = drizzle(state);
+
+	expect(() => db.insert(users).values({ id: 1 }).run()).toThrow(D1ObjectReplicaWriteError);
 });
 
 test('explicit raw read helpers run on replicas', () => {
@@ -128,6 +151,37 @@ test('explicit raw read helpers run on replicas', () => {
 	expect(db.d1.readGet<{ id: number }>(sql`select id from users`)).toEqual({ id: 1 });
 	expect(db.d1.readValues<[number]>(sql`select id from users`)).toEqual([[1]]);
 	expect(calls).toHaveLength(3);
+});
+
+test('explicit raw read helpers reject mutation SQL', () => {
+	const { state, calls } = createState({ primaryStub: {} });
+	const db = drizzle(state);
+
+	expect(() => db.d1.readAll(sql`insert into users (id) values (1)`)).toThrow(
+		'D1 object read helpers only accept SELECT or EXPLAIN statements',
+	);
+	expect(() => db.d1.readGet('with recent as (select id from users) select * from recent')).toThrow(
+		'D1 object read helpers only accept SELECT or EXPLAIN statements',
+	);
+	expect(calls).toHaveLength(0);
+});
+
+test('D1 object mutation SQL detection skips comments and allows reads', () => {
+	expect(isD1ObjectMutationSql('-- comment\n /* next */ select * from users')).toBe(false);
+	expect(isD1ObjectMutationSql('explain select * from users')).toBe(false);
+	expect(isD1ObjectMutationSql('delete from users')).toBe(true);
+	expect(isD1ObjectMutationSql('with recent as (select * from users) select * from recent')).toBe(true);
+});
+
+test('$count runs on replicas', async () => {
+	const { state, calls } = createState({
+		primaryStub: {},
+		rawRows: [[3]],
+	});
+	const db = drizzle(state);
+
+	await expect(db.$count(users)).resolves.toBe(3);
+	expect(calls[0]?.sql).toContain('select count(*)');
 });
 
 test('mapped relational-style reads run on replicas', () => {
@@ -159,8 +213,26 @@ test('migrations forward from replicas to primary', async () => {
 	expect(applyDrizzleMigrations).toHaveBeenCalledWith(config);
 });
 
+test('migrate preserves original errors when rollback throws', () => {
+	const rollback = vi.fn(() => {
+		throw new Error('rollback');
+	});
+	const db = {
+		transaction(callback: (tx: { rollback(): never }) => void) {
+			callback({ rollback });
+		},
+		run: vi.fn(() => {
+			throw new Error('create failed');
+		}),
+		values: vi.fn(),
+	} as unknown as Parameters<typeof migrate>[0];
+
+	expect(() => migrate(db, { journal: { entries: [] }, migrations: {} })).toThrow('create failed');
+	expect(rollback).toHaveBeenCalled();
+});
+
 test('primary query RPC returns bookmarks for writes', async () => {
-	const { state } = createState();
+	const { state } = createState({ configureReadReplication: async () => {} });
 	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
 	class TestObject extends DrizzleD1Object<Record<string, never>> {}
 	const object = new TestObject(state, {}, { readReplication: false });

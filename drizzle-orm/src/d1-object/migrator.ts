@@ -72,7 +72,11 @@ export function migrate<TSchema extends Record<string, unknown>>(
 				}
 			}
 		} catch (error: any) {
-			tx.rollback();
+			try {
+				tx.rollback();
+			} catch {
+				// Preserve the original migration error; rollback() throws by design.
+			}
 			throw error;
 		}
 	});

@@ -16,6 +16,7 @@ import { SQLiteSyncDialect } from '~/sqlite-core/dialect.ts';
 import { SQLiteD1ObjectSession } from './session.ts';
 import { isD1ObjectReplica } from './setup.ts';
 import type { D1ObjectDrizzleConfig, D1ObjectHelpers, D1ObjectState, D1ObjectStorage } from './types.ts';
+import { assertD1ObjectReadQuery } from './utils.ts';
 
 export class DrizzleD1ObjectDatabase<
 	TSchema extends Record<string, unknown> = Record<string, never>,
@@ -106,14 +107,18 @@ function createD1Helpers(ctx: DurableObjectState, dialect: SQLiteSyncDialect): D
 		},
 		readAll<T = unknown>(query: SQLWrapper | string): T[] {
 			const builtQuery = toQuery(query, dialect);
+			assertD1ObjectReadQuery(builtQuery);
 			return ctx.storage.sql.exec<T & Record<string, SqlStorageValue>>(builtQuery.sql, ...builtQuery.params).toArray();
 		},
 		readGet<T = unknown>(query: SQLWrapper | string): T | undefined {
 			const builtQuery = toQuery(query, dialect);
-			return ctx.storage.sql.exec<T & Record<string, SqlStorageValue>>(builtQuery.sql, ...builtQuery.params).next().value;
+			assertD1ObjectReadQuery(builtQuery);
+			return ctx.storage.sql.exec<T & Record<string, SqlStorageValue>>(builtQuery.sql, ...builtQuery.params).next()
+				.value;
 		},
 		readValues<T extends unknown[] = unknown[]>(query: SQLWrapper | string): T[] {
 			const builtQuery = toQuery(query, dialect);
+			assertD1ObjectReadQuery(builtQuery);
 			return Array.from(ctx.storage.sql.exec(builtQuery.sql, ...builtQuery.params).raw<SqlStorageValue[]>()) as T[];
 		},
 	};

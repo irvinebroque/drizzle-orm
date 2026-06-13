@@ -8,7 +8,7 @@ export interface D1ObjectRuntimeConfig {
 	readReplication?:
 		| false
 		| {
-			mode: 'auto';
+			mode: 'auto' | 'disabled';
 			enabled?: boolean | ((ctx: DurableObjectState) => boolean | Promise<boolean>);
 		};
 }
@@ -93,7 +93,7 @@ export interface D1ObjectPrimaryStub {
 
 export type D1ObjectState = DurableObjectState & {
 	primaryStub?: D1ObjectPrimaryStub;
-	configureReadReplication(config: { mode: 'auto' }): Promise<void>;
+	configureReadReplication(config: { mode: 'auto' | 'disabled' }): Promise<void>;
 };
 
 export type D1ObjectStorage = DurableObjectStorage & {
