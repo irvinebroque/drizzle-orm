@@ -1,11 +1,13 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { expect, test, vi } from 'vitest';
+import { createD1ObjectSession } from '~/d1-object/client.ts';
 import { drizzle } from '~/d1-object/driver.ts';
 import { D1ObjectReplicaWriteError, isD1ObjectReplicaWriteError } from '~/d1-object/errors.ts';
 import { migrate } from '~/d1-object/migrator.ts';
 import { SQLiteD1ObjectSession } from '~/d1-object/session.ts';
 import { setupD1Object } from '~/d1-object/setup.ts';
+import type { D1ObjectMethodRequest } from '~/d1-object/types.ts';
 import { isD1ObjectMutationSql } from '~/d1-object/utils.ts';
 import { sql } from '~/sql/sql.ts';
 import { integer, sqliteTable } from '~/sqlite-core';
@@ -58,6 +60,7 @@ function createState(options: {
 	rows?: Record<string, SqlStorageValue>[];
 	rawRows?: SqlStorageValue[][];
 	configureReadReplication?: (config: { mode: 'auto' | 'disabled' }) => Promise<void>;
+	waitForBookmark?: (bookmark: string) => Promise<void>;
 } = {}) {
 	const calls: { sql: string; params: unknown[] }[] = [];
 	const state = {
@@ -76,6 +79,7 @@ function createState(options: {
 			getCurrentBookmark: async () => 'bookmark',
 			getBookmarkForTime: async () => 'bookmark-at-time',
 			onNextSessionRestoreBookmark: async () => 'restore-bookmark',
+			waitForBookmark: options.waitForBookmark,
 		},
 		blockConcurrencyWhile(callback: () => Promise<unknown>) {
 			void callback();
@@ -246,4 +250,116 @@ test('primary query RPC returns bookmarks for writes', async () => {
 	});
 
 	expect(result.bookmark).toBe('bookmark');
+});
+
+test('object method RPC waits for bookmarks and returns updated bookmarks', async () => {
+	const waitForBookmark = vi.fn(async () => {});
+	const { state } = createState({ configureReadReplication: async () => {}, waitForBookmark });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {
+		async listPosts(limit: number) {
+			return [{ id: limit }];
+		}
+	}
+	const object = new TestObject(state, {}, { readReplication: false });
+
+	const result = await object.runDrizzleObjectMethod({
+		method: 'listPosts',
+		args: [10],
+		bookmark: 'client-bookmark',
+	});
+
+	expect(waitForBookmark).toHaveBeenCalledWith('client-bookmark');
+	expect(result).toEqual({
+		value: [{ id: 10 }],
+		bookmark: 'bookmark',
+	});
+});
+
+test('object method RPC rejects reserved methods', async () => {
+	const { state } = createState({ configureReadReplication: async () => {} });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {}, { readReplication: false });
+
+	await expect(object.runDrizzleObjectMethod({
+		method: 'runDrizzleQuery',
+		args: [],
+	})).rejects.toThrow("D1 object method 'runDrizzleQuery' cannot be called through a Drizzle object session");
+});
+
+test('D1 object sessions forward and update bookmarks', async () => {
+	const requests: D1ObjectMethodRequest[] = [];
+	const session = createD1ObjectSession<{
+		listPosts(limit: number): Promise<{ id: number }[]>;
+		createPost(title: string): void;
+	}>({
+		async runDrizzleObjectMethod(request) {
+			requests.push(request);
+			return {
+				value: request.method === 'listPosts' ? [{ id: request.args[0] as number }] : undefined,
+				bookmark: `bookmark-${requests.length}`,
+			};
+		},
+	}, { bookmark: 'initial-bookmark' });
+
+	await expect(session.client.listPosts(10)).resolves.toEqual([{ id: 10 }]);
+	expect(requests[0]).toEqual({
+		method: 'listPosts',
+		args: [10],
+		bookmark: 'initial-bookmark',
+	});
+	expect(session.bookmark).toBe('bookmark-1');
+	expect(session.getBookmark()).toBe('bookmark-1');
+
+	session.setBookmark('manual-bookmark');
+	await session.client.createPost('hello');
+	expect(requests[1]).toEqual({
+		method: 'createPost',
+		args: ['hello'],
+		bookmark: 'manual-bookmark',
+	});
+	expect(session.bookmark).toBe('bookmark-2');
+});
+
+test('D1 object sessions serialize calls with the latest bookmark', async () => {
+	let releaseFirst!: () => void;
+	const requests: D1ObjectMethodRequest[] = [];
+	const session = createD1ObjectSession<{
+		first(): Promise<string>;
+		second(): Promise<string>;
+	}>({
+		async runDrizzleObjectMethod(request) {
+			requests.push(request);
+			if (request.method === 'first') {
+				await new Promise<void>((resolve) => {
+					releaseFirst = resolve;
+				});
+			}
+			return {
+				value: request.method,
+				bookmark: `bookmark-${requests.length}`,
+			};
+		},
+	}, { bookmark: 'initial-bookmark' });
+
+	const first = session.client.first();
+	const second = session.client.second();
+	await Promise.resolve();
+
+	expect(requests).toEqual([{
+		method: 'first',
+		args: [],
+		bookmark: 'initial-bookmark',
+	}]);
+
+	releaseFirst();
+	await expect(first).resolves.toBe('first');
+	await expect(second).resolves.toBe('second');
+	expect(requests[1]).toEqual({
+		method: 'second',
+		args: [],
+		bookmark: 'bookmark-1',
+	});
+	expect(session.bookmark).toBe('bookmark-2');
 });

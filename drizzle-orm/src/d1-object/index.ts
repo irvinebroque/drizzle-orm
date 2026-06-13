@@ -1,3 +1,4 @@
+export * from './client.ts';
 export * from './driver.ts';
 export * from './errors.ts';
 export * from './object.ts';

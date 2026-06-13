@@ -6,13 +6,28 @@ import { D1ObjectReplicaWriteError } from './errors.ts';
 import { migrate } from './migrator.ts';
 import { isD1ObjectReplica, setupD1Object } from './setup.ts';
 import type {
+	D1ObjectMethodRequest,
+	D1ObjectMethodResponse,
 	D1ObjectMigrationConfig,
 	D1ObjectMigrationResult,
 	D1ObjectQueryRequest,
 	D1ObjectQueryResponse,
 	D1ObjectRuntimeConfig,
 	D1ObjectState,
+	D1ObjectStorage,
 } from './types.ts';
+
+const reservedD1ObjectMethods = new Set([
+	'constructor',
+	'isReplica',
+	'assertPrimary',
+	'configureD1ReadReplication',
+	'runDrizzleObjectMethod',
+	'runDrizzleQuery',
+	'applyDrizzleMigrations',
+]);
+
+const objectPrototypeMethods = new Set(Object.getOwnPropertyNames(Object.prototype));
 
 /** Base Durable Object for Drizzle-backed D1 application objects. */
 export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> {
@@ -39,6 +54,17 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 			}
 			await d1Ctx.configureReadReplication(config);
 		}
+	}
+
+	async runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse> {
+		const method = this.getDrizzleObjectMethod(request.method);
+		await this.waitForD1ObjectBookmark(request.bookmark);
+
+		const value = await method.apply(this, request.args);
+		return {
+			value,
+			bookmark: await this.ctx.storage.getCurrentBookmark(),
+		};
 	}
 
 	async runDrizzleQuery(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse> {
@@ -104,6 +130,33 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 			servedBy: this.isReplica() ? 'replica' : 'primary',
 			forwarded,
 		};
+	}
+
+	private getDrizzleObjectMethod(methodName: string): (...args: unknown[]) => unknown {
+		if (
+			reservedD1ObjectMethods.has(methodName) || objectPrototypeMethods.has(methodName) || methodName.startsWith('_')
+		) {
+			throw new Error(`D1 object method '${methodName}' cannot be called through a Drizzle object session`);
+		}
+
+		const method = (this as Record<string, unknown>)[methodName];
+		if (typeof method !== 'function') {
+			throw new Error(`D1 object method '${methodName}' does not exist`);
+		}
+
+		return method as (...args: unknown[]) => unknown;
+	}
+
+	private async waitForD1ObjectBookmark(bookmark: string | null | undefined): Promise<void> {
+		if (!bookmark) {
+			return;
+		}
+
+		const storage = this.ctx.storage as D1ObjectStorage;
+		if (typeof storage.waitForBookmark !== 'function') {
+			throw new Error('D1 bookmark waiting is not available in this runtime');
+		}
+		await storage.waitForBookmark(bookmark);
 	}
 
 	private async withWriteBookmark(response: D1ObjectQueryResponse, write: boolean): Promise<D1ObjectQueryResponse> {

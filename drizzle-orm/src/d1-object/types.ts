@@ -74,6 +74,17 @@ export interface D1ObjectQueryResponse {
 	forwarded?: boolean;
 }
 
+export interface D1ObjectMethodRequest {
+	method: string;
+	args: unknown[];
+	bookmark?: string | null;
+}
+
+export interface D1ObjectMethodResponse<T = unknown> {
+	value: T;
+	bookmark: string;
+}
+
 export interface D1ObjectMigrationConfig {
 	journal: {
 		entries: { idx: number; when: number; tag: string; breakpoints: boolean }[];
