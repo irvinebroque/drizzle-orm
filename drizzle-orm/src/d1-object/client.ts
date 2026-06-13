@@ -1,10 +1,13 @@
 import { createD1ObjectRemoteDatabase, type DrizzleD1ObjectRemoteDatabase } from './remote.ts';
 import type {
+	D1ObjectBookmarkResponse,
 	D1ObjectMethodRequest,
 	D1ObjectMethodResponse,
 	D1ObjectQueryRequest,
 	D1ObjectQueryResponse,
 	D1ObjectRemoteDrizzleConfig,
+	D1ObjectSessionRequest,
+	D1ObjectSetBookmarkRequest,
 } from './types.ts';
 
 type AnyMethod = (...args: any[]) => any;
@@ -26,6 +29,13 @@ export type D1ObjectSessionClient<TObject extends object> = {
 export interface D1ObjectSessionStub {
 	runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse>;
 	runDrizzleQuery?(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse>;
+	createDrizzleSession?(request: D1ObjectSessionRequest): D1ObjectRemoteSessionStub;
+}
+
+export interface D1ObjectRemoteSessionStub {
+	runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse>;
+	runDrizzleQuery(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse>;
+	setBookmark?(request: D1ObjectSetBookmarkRequest): Promise<D1ObjectBookmarkResponse>;
 }
 
 export interface D1ObjectSessionOptions<TSchema extends Record<string, unknown> = Record<string, never>>
@@ -96,8 +106,15 @@ export function createD1ObjectSessionDatabase<
 ): DrizzleD1ObjectSessionDatabase<TObject, TSchema, TClient> {
 	let bookmark = options.bookmark ?? undefined;
 	let pending = Promise.resolve();
+	let sequence = 0;
+	const remoteSession = stub.createDrizzleSession?.({ bookmark });
+	const nextSequence = () => remoteSession === undefined ? undefined : ++sequence;
 
 	const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+		if (remoteSession !== undefined) {
+			return operation();
+		}
+
 		const call = pending.then(operation);
 		pending = call.then(
 			() => undefined,
@@ -113,6 +130,17 @@ export function createD1ObjectSessionDatabase<
 			}
 
 			return (...args: unknown[]) => {
+				if (remoteSession !== undefined) {
+					return remoteSession.runDrizzleObjectMethod({
+						method: property,
+						args,
+						sequence: nextSequence(),
+					}).then((response) => {
+						bookmark = response.bookmark;
+						return response.value;
+					});
+				}
+
 				return enqueue(async () => {
 					const response = await stub.runDrizzleObjectMethod({
 						method: property,
@@ -126,13 +154,14 @@ export function createD1ObjectSessionDatabase<
 		},
 	}) as D1ObjectSessionClient<TObject>;
 
-	const db = createD1ObjectRemoteDatabase(stub, {
+	const db = createD1ObjectRemoteDatabase(remoteSession ?? stub, {
 		getBookmark() {
-			return bookmark;
+			return remoteSession === undefined ? bookmark : undefined;
 		},
 		setBookmark(nextBookmark) {
 			bookmark = nextBookmark ?? undefined;
 		},
+		getSequence: nextSequence,
 		enqueue,
 	}, options);
 
@@ -146,6 +175,14 @@ export function createD1ObjectSessionDatabase<
 		},
 		setBookmark(nextBookmark) {
 			bookmark = nextBookmark ?? undefined;
+			if (remoteSession?.setBookmark) {
+				void remoteSession.setBookmark({
+					bookmark,
+					sequence: nextSequence(),
+				}).then((response) => {
+					bookmark = response.bookmark;
+				}, () => undefined);
+			}
 		},
 	};
 

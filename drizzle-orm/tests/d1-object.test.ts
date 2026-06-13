@@ -23,6 +23,7 @@ vi.mock('cloudflare:workers', () => ({
 			this.env = env;
 		}
 	},
+	RpcTarget: class {},
 }));
 
 const users = sqliteTable('users', {
@@ -310,6 +311,44 @@ test('query RPC requires bookmark waiting on replicas', async () => {
 	})).rejects.toThrow('D1 bookmark waiting is not available in this runtime');
 });
 
+test('remote query session executes pipelined arrivals by sequence', async () => {
+	const waitForBookmark = vi.fn(async () => {});
+	const { state, calls } = createState({
+		configureReadReplication: async () => {},
+		waitForBookmark,
+	});
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {}, { readReplication: false });
+	const session = object.createDrizzleSession({ bookmark: 'initial-bookmark' });
+
+	const second = session.runDrizzleQuery({
+		sql: 'select 2',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 2,
+	});
+	await Promise.resolve();
+
+	expect(calls).toHaveLength(0);
+
+	const first = session.runDrizzleQuery({
+		sql: 'select 1',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 1,
+	});
+
+	await Promise.all([first, second]);
+	expect(calls.map((call) => call.sql)).toEqual(['select 1', 'select 2']);
+	expect(waitForBookmark).toHaveBeenNthCalledWith(1, 'initial-bookmark');
+	expect(waitForBookmark).toHaveBeenNthCalledWith(2, 'bookmark');
+});
+
 test('object method RPC waits for bookmarks and returns updated bookmarks', async () => {
 	const waitForBookmark = vi.fn(async () => {});
 	const { state } = createState({ configureReadReplication: async () => {}, waitForBookmark });
@@ -484,6 +523,89 @@ test('D1 object remote drizzle exposes query and session helpers on db', async (
 		bookmark: 'manual-bookmark',
 	});
 	expect(db.d1.bookmark).toBe('method-bookmark');
+});
+
+test('D1 object remote drizzle uses pipelined remote sessions when available', async () => {
+	let releaseQuery!: () => void;
+	const sessionStarts: unknown[] = [];
+	const queryRequests: D1ObjectQueryRequest[] = [];
+	const methodRequests: D1ObjectMethodRequest[] = [];
+	const bookmarkRequests: unknown[] = [];
+	const db = drizzle<{
+		listPosts(limit: number): Promise<{ id: number }[]>;
+	}, { users: typeof users }>({
+		async runDrizzleObjectMethod() {
+			throw new Error('fallback object method should not run');
+		},
+		async runDrizzleQuery() {
+			throw new Error('fallback query should not run');
+		},
+		createDrizzleSession(request) {
+			sessionStarts.push(request);
+			return {
+				async runDrizzleQuery(request) {
+					queryRequests.push(request);
+					if (queryRequests.length === 1) {
+						await new Promise<void>((resolve) => {
+							releaseQuery = resolve;
+						});
+					}
+					return {
+						rows: [[1]],
+						bookmark: 'query-bookmark',
+						servedBy: 'replica',
+					};
+				},
+				async runDrizzleObjectMethod(request) {
+					methodRequests.push(request);
+					return {
+						value: [{ id: request.args[0] as number }],
+						bookmark: 'method-bookmark',
+					};
+				},
+				async setBookmark(request) {
+					bookmarkRequests.push(request);
+					return { bookmark: request.bookmark ?? undefined };
+				},
+			};
+		},
+	}, { schema: { users }, bookmark: 'initial-bookmark' });
+
+	const query = db.query.users.findMany().execute();
+	const method = db.d1.client.listPosts(10);
+
+	expect(sessionStarts).toEqual([{ bookmark: 'initial-bookmark' }]);
+	await vi.waitFor(() => {
+		expect(queryRequests).toHaveLength(1);
+		expect(methodRequests).toHaveLength(1);
+	});
+	expect(queryRequests[0]).toMatchObject({
+		method: 'values',
+		responseMode: 'array',
+		write: false,
+		bookmark: undefined,
+		sequence: 1,
+	});
+	expect(methodRequests[0]).toEqual({
+		method: 'listPosts',
+		args: [10],
+		sequence: 2,
+	});
+
+	releaseQuery();
+	await expect(query).resolves.toEqual([{ id: 1 }]);
+	await expect(method).resolves.toEqual([{ id: 10 }]);
+
+	db.d1.setBookmark('manual-bookmark');
+	await db.query.users.findMany();
+	expect(bookmarkRequests[0]).toEqual({
+		bookmark: 'manual-bookmark',
+		sequence: 3,
+	});
+	expect(queryRequests[1]).toMatchObject({
+		sequence: 4,
+		bookmark: undefined,
+	});
 });
 
 test('D1 object session db marks writes for primary forwarding', async () => {

@@ -1,11 +1,12 @@
 /// <reference types="@cloudflare/workers-types" />
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, RpcTarget } from 'cloudflare:workers';
 import { drizzle } from './driver.ts';
 import { D1ObjectReplicaWriteError } from './errors.ts';
 import { migrate } from './migrator.ts';
 import { isD1ObjectReplica, setupD1Object } from './setup.ts';
 import type {
+	D1ObjectBookmarkResponse,
 	D1ObjectMethodRequest,
 	D1ObjectMethodResponse,
 	D1ObjectMigrationConfig,
@@ -13,6 +14,8 @@ import type {
 	D1ObjectQueryRequest,
 	D1ObjectQueryResponse,
 	D1ObjectRuntimeConfig,
+	D1ObjectSessionRequest,
+	D1ObjectSetBookmarkRequest,
 	D1ObjectState,
 	D1ObjectStorage,
 } from './types.ts';
@@ -24,6 +27,7 @@ const reservedD1ObjectMethodNames = [
 	'configureD1ReadReplication',
 	'runDrizzleObjectMethod',
 	'runDrizzleQuery',
+	'createDrizzleSession',
 	'applyDrizzleMigrations',
 ] as const;
 
@@ -45,6 +49,100 @@ export type D1ObjectPrimaryMethod<TObject extends object> = Extract<
 
 export function d1PrimaryMethods<TObject extends object>() {
 	return <TMethods extends readonly D1ObjectPrimaryMethod<TObject>[]>(...methods: TMethods): TMethods => methods;
+}
+
+type OrderedD1ObjectSessionOperation<T> = {
+	operation: () => Promise<T>;
+	resolve: (value: T) => void;
+	reject: (reason?: unknown) => void;
+};
+
+class DrizzleD1ObjectRemoteSession extends RpcTarget {
+	private bookmark: string | undefined;
+	private pending = Promise.resolve();
+	private nextSequence = 1;
+	private orderedOperations = new Map<number, OrderedD1ObjectSessionOperation<unknown>>();
+
+	constructor(
+		private object: DrizzleD1Object,
+		bookmark: string | null | undefined,
+	) {
+		super();
+		this.bookmark = bookmark ?? undefined;
+	}
+
+	runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse> {
+		return this.enqueue(request.sequence, async () => {
+			const response = await this.object.runDrizzleObjectMethod({
+				...request,
+				bookmark: this.bookmark,
+			});
+			this.bookmark = response.bookmark;
+			return response;
+		});
+	}
+
+	runDrizzleQuery(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse> {
+		return this.enqueue(request.sequence, async () => {
+			const response = await this.object.runDrizzleQuery({
+				...request,
+				bookmark: this.bookmark,
+			});
+			if (response.bookmark !== undefined) {
+				this.bookmark = response.bookmark;
+			}
+			return response;
+		});
+	}
+
+	setBookmark(request: D1ObjectSetBookmarkRequest): Promise<D1ObjectBookmarkResponse> {
+		return this.enqueue(request.sequence, async () => {
+			this.bookmark = request.bookmark ?? undefined;
+			return { bookmark: this.bookmark };
+		});
+	}
+
+	private enqueue<T>(sequence: number | undefined, operation: () => Promise<T>): Promise<T> {
+		if (sequence === undefined) {
+			return this.enqueueReady(operation);
+		}
+
+		if (sequence < this.nextSequence || this.orderedOperations.has(sequence)) {
+			return Promise.reject(new Error(`D1 object session received duplicate or stale sequence ${sequence}`));
+		}
+
+		const call = new Promise<T>((resolve, reject) => {
+			this.orderedOperations.set(sequence, {
+				operation,
+				resolve: resolve as (value: unknown) => void,
+				reject,
+			});
+		});
+		this.drainOrderedOperations();
+		return call;
+	}
+
+	private drainOrderedOperations(): void {
+		for (;;) {
+			const next = this.orderedOperations.get(this.nextSequence);
+			if (!next) {
+				return;
+			}
+
+			this.orderedOperations.delete(this.nextSequence);
+			this.nextSequence++;
+			this.enqueueReady(next.operation).then(next.resolve, next.reject);
+		}
+	}
+
+	private enqueueReady<T>(operation: () => Promise<T>): Promise<T> {
+		const call = this.pending.then(operation);
+		this.pending = call.then(
+			() => undefined,
+			() => undefined,
+		);
+		return call;
+	}
 }
 
 /** Base Durable Object for Drizzle-backed D1 application objects. */
@@ -93,6 +191,10 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 			value,
 			bookmark: await this.ctx.storage.getCurrentBookmark(),
 		};
+	}
+
+	createDrizzleSession(request: D1ObjectSessionRequest = {}): DrizzleD1ObjectRemoteSession {
+		return new DrizzleD1ObjectRemoteSession(this, request.bookmark);
 	}
 
 	async runDrizzleQuery(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse> {

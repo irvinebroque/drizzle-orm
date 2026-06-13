@@ -46,6 +46,7 @@ export interface D1ObjectRemoteStub {
 export interface D1ObjectRemoteSessionController {
 	getBookmark(): string | undefined;
 	setBookmark(bookmark: string | null | undefined): void;
+	getSequence?(): number | undefined;
 	enqueue<T>(operation: () => Promise<T>): Promise<T>;
 }
 
@@ -322,6 +323,7 @@ export class SQLiteD1ObjectRemotePreparedQuery<T extends PreparedQueryConfig = P
 					responseMode,
 					write: this.isWrite(),
 					bookmark: this.controller.getBookmark(),
+					sequence: this.controller.getSequence?.(),
 					queryType: this.d1QueryMetadata?.type,
 					tables: this.d1QueryMetadata?.tables,
 				});
