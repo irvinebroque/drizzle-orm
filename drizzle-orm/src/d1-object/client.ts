@@ -39,11 +39,27 @@ export interface D1ObjectSession<
 	TSchema extends Record<string, unknown> = Record<string, never>,
 > {
 	readonly client: D1ObjectSessionClient<TObject>;
-	readonly db: DrizzleD1ObjectRemoteDatabase<TSchema>;
+	readonly db: DrizzleD1ObjectSessionDatabase<TObject, TSchema>;
 	readonly bookmark: string | undefined;
 	getBookmark(): string | undefined;
 	setBookmark(bookmark: string | null | undefined): void;
 }
+
+export interface D1ObjectSessionHelpers<TObject extends object> {
+	readonly client: D1ObjectSessionClient<TObject>;
+	readonly bookmark: string | undefined;
+	getBookmark(): string | undefined;
+	setBookmark(bookmark: string | null | undefined): void;
+}
+
+export type DrizzleD1ObjectSessionDatabase<
+	TObject extends object,
+	TSchema extends Record<string, unknown> = Record<string, never>,
+	TClient extends D1ObjectSessionStub = D1ObjectSessionStub,
+> = DrizzleD1ObjectRemoteDatabase<TSchema> & {
+	readonly $client: TClient;
+	readonly d1: D1ObjectSessionHelpers<TObject>;
+};
 
 export function createD1ObjectSession<
 	TObject extends object,
@@ -52,6 +68,32 @@ export function createD1ObjectSession<
 	stub: D1ObjectSessionStub,
 	options: D1ObjectSessionOptions<TSchema> = {},
 ): D1ObjectSession<TObject, TSchema> {
+	const db = createD1ObjectSessionDatabase<TObject, TSchema>(stub, options);
+
+	return {
+		client: db.d1.client,
+		db,
+		get bookmark() {
+			return db.d1.bookmark;
+		},
+		getBookmark() {
+			return db.d1.getBookmark();
+		},
+		setBookmark(bookmark) {
+			db.d1.setBookmark(bookmark);
+		},
+	};
+}
+
+/** @internal */
+export function createD1ObjectSessionDatabase<
+	TObject extends object,
+	TSchema extends Record<string, unknown> = Record<string, never>,
+	TClient extends D1ObjectSessionStub = D1ObjectSessionStub,
+>(
+	stub: TClient,
+	options: D1ObjectSessionOptions<TSchema> = {},
+): DrizzleD1ObjectSessionDatabase<TObject, TSchema, TClient> {
 	let bookmark = options.bookmark ?? undefined;
 	let pending = Promise.resolve();
 
@@ -94,9 +136,8 @@ export function createD1ObjectSession<
 		enqueue,
 	}, options);
 
-	return {
+	const d1: D1ObjectSessionHelpers<TObject> = {
 		client,
-		db,
 		get bookmark() {
 			return bookmark;
 		},
@@ -107,4 +148,8 @@ export function createD1ObjectSession<
 			bookmark = nextBookmark ?? undefined;
 		},
 	};
+
+	(<any> db).d1 = d1;
+
+	return db as DrizzleD1ObjectSessionDatabase<TObject, TSchema, TClient>;
 }

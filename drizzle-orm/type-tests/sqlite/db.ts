@@ -47,3 +47,18 @@ const d1ObjectSession = createD1ObjectSession<TestD1Object, { users: typeof user
 Expect<Equal<ReturnType<typeof d1ObjectSession.client.listPosts>, Promise<{ id: number }[]>>>();
 const d1ObjectUsers = d1ObjectSession.db.query.users.findMany();
 Expect<Equal<Awaited<typeof d1ObjectUsers>, { id: number | null }[]>>();
+
+const d1ObjectRemoteDb = drizzleD1Object<TestD1Object, { users: typeof users }>({
+	runDrizzleObjectMethod: async () => ({ value: [], bookmark: 'bookmark' }),
+}, { schema: { users } });
+
+Expect<Equal<ReturnType<typeof d1ObjectRemoteDb.d1.client.listPosts>, Promise<{ id: number }[]>>>();
+const d1ObjectRemoteUsers = d1ObjectRemoteDb.query.users.findMany();
+Expect<Equal<Awaited<typeof d1ObjectRemoteUsers>, { id: number | null }[]>>();
+
+const inferredD1ObjectRemoteDb = drizzleD1Object({
+	runDrizzleObjectMethod: async () => ({ value: [], bookmark: 'bookmark' }),
+}, { schema: { users } });
+
+const inferredD1ObjectRemoteUsers = inferredD1ObjectRemoteDb.query.users.findMany();
+Expect<Equal<Awaited<typeof inferredD1ObjectRemoteUsers>, { id: number | null }[]>>();

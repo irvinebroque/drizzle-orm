@@ -389,6 +389,48 @@ test('D1 object session db runs Drizzle relational queries over query RPC', asyn
 	expect(session.getBookmark()).toBe('query-bookmark');
 });
 
+test('D1 object remote drizzle exposes query and session helpers on db', async () => {
+	const queryRequests: D1ObjectQueryRequest[] = [];
+	const methodRequests: D1ObjectMethodRequest[] = [];
+	const db = drizzle<{
+		listPosts(limit: number): Promise<{ id: number }[]>;
+	}, { users: typeof users }>({
+		async runDrizzleObjectMethod(request) {
+			methodRequests.push(request);
+			return {
+				value: [{ id: request.args[0] as number }],
+				bookmark: 'method-bookmark',
+			};
+		},
+		async runDrizzleQuery(request) {
+			queryRequests.push(request);
+			return {
+				rows: [[1]],
+				bookmark: 'query-bookmark',
+				servedBy: 'replica',
+			};
+		},
+	}, { schema: { users }, bookmark: 'initial-bookmark' });
+
+	await expect(db.query.users.findMany()).resolves.toEqual([{ id: 1 }]);
+	expect(queryRequests[0]).toMatchObject({
+		method: 'values',
+		responseMode: 'array',
+		write: false,
+		bookmark: 'initial-bookmark',
+	});
+	expect(db.d1.getBookmark()).toBe('query-bookmark');
+
+	db.d1.setBookmark('manual-bookmark');
+	await expect(db.d1.client.listPosts(10)).resolves.toEqual([{ id: 10 }]);
+	expect(methodRequests[0]).toEqual({
+		method: 'listPosts',
+		args: [10],
+		bookmark: 'manual-bookmark',
+	});
+	expect(db.d1.bookmark).toBe('method-bookmark');
+});
+
 test('D1 object session db marks writes for primary forwarding', async () => {
 	const requests: D1ObjectQueryRequest[] = [];
 	const session = createD1ObjectSession<Record<string, never>, { users: typeof users }>({

@@ -19,39 +19,39 @@ export class BlogDatabase extends DrizzleD1Object<Env> {
 
 ## Bookmark sessions
 
-D1 read-replica bookmarks are consistency metadata, so application methods do not need to accept or return them directly. Wrap the Durable Object stub with `createD1ObjectSession()` at the request boundary instead.
+D1 read-replica bookmarks are consistency metadata, so application methods do not need to accept or return them directly. Wrap the Durable Object stub with `drizzle()` at the request boundary instead.
 
 ```ts
-import { createD1ObjectSession } from 'drizzle-orm/d1-object';
+import { drizzle } from 'drizzle-orm/d1-object';
 
 export async function fetch(request: Request, env: Env) {
 	const id = env.BLOG_DATABASE.idFromName('blog');
-	const blog = createD1ObjectSession<BlogDatabase>(env.BLOG_DATABASE.get(id), {
+	const db = drizzle<BlogDatabase>(env.BLOG_DATABASE.get(id), {
 		bookmark: request.headers.get('x-d1-bookmark'),
 	});
 
-	const posts = await blog.client.listPosts();
+	const posts = await db.d1.client.listPosts();
 
 	return Response.json({ posts }, {
 		headers: {
-			'x-d1-bookmark': blog.getBookmark() ?? '',
+			'x-d1-bookmark': db.d1.getBookmark() ?? '',
 		},
 	});
 }
 ```
 
-`createD1ObjectSession()` sends the current bookmark with each method call, waits for that bookmark inside the object before running the method, and stores the updated bookmark returned by the object. Calls through one session are serialized to preserve causal order. Use a separate session when calls are intentionally independent.
+`drizzle()` sends the current bookmark with each remote method call, waits for that bookmark inside the object before running the method, and stores the updated bookmark returned by the object. Calls through one database are serialized to preserve causal order. Use a separate database when calls are intentionally independent.
 
 ## Remote Drizzle sessions
 
-Use `session.db` when application code should keep Drizzle's normal query syntax while SQL still executes inside the Durable Object.
+The remote database keeps Drizzle's normal query syntax while SQL still executes inside the Durable Object.
 
 ```ts
-import { createD1ObjectSession } from 'drizzle-orm/d1-object';
+import { drizzle } from 'drizzle-orm/d1-object';
 import * as schema from './schema';
 
 export async function fetch(request: Request, env: Env) {
-	const blog = createD1ObjectSession<BlogDatabase, typeof schema>(
+	const db = drizzle<BlogDatabase, typeof schema>(
 		env.BLOG_DATABASE.getByName('blog'),
 		{
 			schema,
@@ -59,21 +59,23 @@ export async function fetch(request: Request, env: Env) {
 		},
 	);
 
-	const posts = await blog.db.query.posts.findMany({
+	const posts = await db.query.posts.findMany({
 		limit: 10,
 	});
 
 	return Response.json({ posts }, {
 		headers: {
-			'x-d1-bookmark': blog.getBookmark() ?? '',
+			'x-d1-bookmark': db.d1.getBookmark() ?? '',
 		},
 	});
 }
 ```
 
-`session.client` and `session.db` share bookmark state and serialize calls through the same queue, so they can be mixed safely inside one request. Direct Drizzle writes are marked as writes in the query RPC and forward from replicas to the primary object. Multi-statement transactions should remain Durable Object methods so the whole transaction runs inside one object invocation.
+`db.d1.client` and `db.query` share bookmark state and serialize calls through the same queue, so they can be mixed safely inside one request. Direct Drizzle writes are marked as writes in the query RPC and forward from replicas to the primary object. Multi-statement transactions should remain Durable Object methods so the whole transaction runs inside one object invocation.
 
-The low-level `db.d1.waitForBookmark()` and `db.d1.getCurrentBookmark()` helpers remain available when an application needs custom bookmark handling.
+The lower-level `createD1ObjectSession()` helper remains available for code that prefers an explicit `{ client, db }` wrapper.
+
+The low-level `db.d1.waitForBookmark()` and `db.d1.getCurrentBookmark()` helpers on in-object databases remain available when an application needs custom bookmark handling.
 
 ## Read replication
 
