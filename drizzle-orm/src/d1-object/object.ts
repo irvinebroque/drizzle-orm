@@ -17,7 +17,7 @@ import type {
 	D1ObjectStorage,
 } from './types.ts';
 
-const reservedD1ObjectMethods = new Set([
+const reservedD1ObjectMethodNames = [
 	'constructor',
 	'isReplica',
 	'assertPrimary',
@@ -25,12 +25,32 @@ const reservedD1ObjectMethods = new Set([
 	'runDrizzleObjectMethod',
 	'runDrizzleQuery',
 	'applyDrizzleMigrations',
-]);
+] as const;
+
+const reservedD1ObjectMethods = new Set<string>(reservedD1ObjectMethodNames);
 
 const objectPrototypeMethods = new Set(Object.getOwnPropertyNames(Object.prototype));
 
+type AnyD1ObjectMethod = (...args: any[]) => any;
+type ReservedD1ObjectMethod = typeof reservedD1ObjectMethodNames[number];
+
+export type D1ObjectPrimaryMethod<TObject extends object> = Extract<
+	{
+		[K in keyof TObject]: K extends ReservedD1ObjectMethod ? never
+			: TObject[K] extends AnyD1ObjectMethod ? K
+			: never;
+	}[keyof TObject],
+	string
+>;
+
+export function d1PrimaryMethods<TObject extends object>() {
+	return <TMethods extends readonly D1ObjectPrimaryMethod<TObject>[]>(...methods: TMethods): TMethods => methods;
+}
+
 /** Base Durable Object for Drizzle-backed D1 application objects. */
 export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> {
+	static readonly primaryMethods: readonly string[] = [];
+
 	constructor(ctx: DurableObjectState, env: Env, config: D1ObjectRuntimeConfig = {}) {
 		super(ctx, env);
 		setupD1Object(ctx, config);
@@ -58,6 +78,14 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 
 	async runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse> {
 		const method = this.getDrizzleObjectMethod(request.method);
+		if (this.shouldForwardD1ObjectMethodToPrimary(request.method)) {
+			const response = await (this.ctx as D1ObjectState).primaryStub?.runDrizzleObjectMethod?.(request);
+			if (!response) {
+				throw new Error('Primary D1 object does not implement runDrizzleObjectMethod');
+			}
+			return response;
+		}
+
 		await this.waitForD1ObjectBookmark(request.bookmark);
 
 		const value = await method.apply(this, request.args);
@@ -145,6 +173,15 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 		}
 
 		return method as (...args: unknown[]) => unknown;
+	}
+
+	private shouldForwardD1ObjectMethodToPrimary(methodName: string): boolean {
+		if (!this.isReplica()) {
+			return false;
+		}
+
+		const constructor = this.constructor as typeof DrizzleD1Object;
+		return constructor.primaryMethods.includes(methodName);
 	}
 
 	private async waitForD1ObjectBookmark(bookmark: string | null | undefined): Promise<void> {

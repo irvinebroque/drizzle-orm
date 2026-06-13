@@ -276,6 +276,44 @@ test('object method RPC waits for bookmarks and returns updated bookmarks', asyn
 	});
 });
 
+test('primary object methods forward from replicas before running user code', async () => {
+	const runDrizzleObjectMethod = vi.fn(async (request: D1ObjectMethodRequest) => ({
+		value: { title: request.args[0] },
+		bookmark: 'primary-bookmark',
+	}));
+	const waitForBookmark = vi.fn(async () => {});
+	const { state } = createState({
+		primaryStub: { runDrizzleObjectMethod },
+		waitForBookmark,
+	});
+	const { DrizzleD1Object, d1PrimaryMethods } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {
+		static override readonly primaryMethods = d1PrimaryMethods<TestObject>()('createPost');
+
+		async createPost(_title: string) {
+			throw new Error('replica method body should not run');
+		}
+	}
+	const object = new TestObject(state, {});
+
+	const result = await object.runDrizzleObjectMethod({
+		method: 'createPost',
+		args: ['hello'],
+		bookmark: 'client-bookmark',
+	});
+
+	expect(runDrizzleObjectMethod).toHaveBeenCalledWith({
+		method: 'createPost',
+		args: ['hello'],
+		bookmark: 'client-bookmark',
+	});
+	expect(waitForBookmark).not.toHaveBeenCalled();
+	expect(result).toEqual({
+		value: { title: 'hello' },
+		bookmark: 'primary-bookmark',
+	});
+});
+
 test('object method RPC rejects reserved methods', async () => {
 	const { state } = createState({ configureReadReplication: async () => {} });
 	const { DrizzleD1Object } = await import('~/d1-object/object.ts');

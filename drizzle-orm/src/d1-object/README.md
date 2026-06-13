@@ -58,6 +58,25 @@ export class BlogDatabase extends DrizzleD1Object<Env> {
 }
 ```
 
+Mark write methods as primary-only so replica calls forward to the primary object before application code runs.
+
+```ts
+import { DrizzleD1Object, d1PrimaryMethods, drizzle } from 'drizzle-orm/d1-object';
+import * as schema from './schema';
+
+export class BlogDatabase extends DrizzleD1Object<Env> {
+	static override readonly primaryMethods = d1PrimaryMethods<BlogDatabase>()('createPost');
+
+	db = drizzle(this.ctx, { schema });
+
+	async createPost(title: string) {
+		return this.db.insert(schema.posts).values({ title }).run();
+	}
+}
+```
+
+The protected `assertPrimary()` helper remains available when a method needs a dynamic primary-only guard.
+
 Raw SQL is write-classified by default. Use `db.d1.readAll()`, `db.d1.readGet()`, or `db.d1.readValues()` for explicit raw reads that may run on replicas.
 
 ## Migrations

@@ -98,6 +98,7 @@ export interface D1ObjectMigrationResult {
 }
 
 export interface D1ObjectPrimaryStub {
+	runDrizzleObjectMethod?(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse>;
 	runDrizzleQuery?(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse>;
 	applyDrizzleMigrations?(migrations: D1ObjectMigrationConfig): Promise<D1ObjectMigrationResult>;
 }
