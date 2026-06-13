@@ -17,12 +17,8 @@ export function setupD1Object(ctx: DurableObjectState, config: D1ObjectRuntimeCo
 			return;
 		}
 
-		if (typeof d1Ctx.configureReadReplication !== 'function') {
-			throw new Error('D1 read replication is not available in this runtime');
-		}
-
 		if (config.readReplication === false) {
-			await d1Ctx.configureReadReplication({ mode: 'disabled' });
+			await configureD1ReadReplicationIfAvailable(d1Ctx, 'disabled');
 			return;
 		}
 
@@ -32,13 +28,30 @@ export function setupD1Object(ctx: DurableObjectState, config: D1ObjectRuntimeCo
 				? await readReplication.enabled(ctx)
 				: readReplication.enabled;
 			if (!enabled) {
-				await d1Ctx.configureReadReplication({ mode: 'disabled' });
+				await configureD1ReadReplicationIfAvailable(d1Ctx, 'disabled');
 				return;
 			}
 		}
 
+		if (readReplication.mode === 'disabled') {
+			await configureD1ReadReplicationIfAvailable(d1Ctx, 'disabled');
+			return;
+		}
+
+		if (typeof d1Ctx.configureReadReplication !== 'function') {
+			throw new Error('D1 read replication is not available in this runtime');
+		}
 		await d1Ctx.configureReadReplication({ mode: readReplication.mode });
 	});
+}
+
+async function configureD1ReadReplicationIfAvailable(
+	ctx: D1ObjectState,
+	mode: 'auto' | 'disabled',
+): Promise<void> {
+	if (typeof ctx.configureReadReplication === 'function') {
+		await ctx.configureReadReplication({ mode });
+	}
 }
 
 export function isD1ObjectReplica(ctx: DurableObjectState): boolean {

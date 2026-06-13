@@ -119,6 +119,16 @@ test('setupD1Object disables read replication when disabled', async () => {
 	expect(configureReadReplication).toHaveBeenCalledWith({ mode: 'disabled' });
 });
 
+test('setupD1Object tolerates missing read replication API when disabled', () => {
+	const state = {
+		blockConcurrencyWhile(callback: () => Promise<unknown>) {
+			return callback();
+		},
+	} as unknown as DurableObjectState;
+
+	expect(() => setupD1Object(state, { readReplication: false })).not.toThrow();
+});
+
 test('raw writes expose typed replica write errors through wrapped causes', () => {
 	const { state } = createState({ primaryStub: {} });
 	const db = drizzle(state);
@@ -168,6 +178,16 @@ test('explicit raw read helpers reject mutation SQL', () => {
 		'D1 object read helpers only accept SELECT or EXPLAIN statements',
 	);
 	expect(calls).toHaveLength(0);
+});
+
+test('bookmark helper tolerates missing bookmark waiting on primary objects only', async () => {
+	const primary = drizzle(createState().state);
+	const replica = drizzle(createState({ primaryStub: {} }).state);
+
+	await expect(primary.d1.waitForBookmark('client-bookmark')).resolves.toBeUndefined();
+	await expect(replica.d1.waitForBookmark('client-bookmark')).rejects.toThrow(
+		'D1 bookmark waiting is not available in this runtime',
+	);
 });
 
 test('D1 object mutation SQL detection skips comments and allows reads', () => {
@@ -253,6 +273,41 @@ test('query RPC waits for bookmarks and returns updated bookmarks', async () => 
 
 	expect(waitForBookmark).toHaveBeenCalledWith('client-bookmark');
 	expect(result.bookmark).toBe('bookmark');
+});
+
+test('query RPC treats missing bookmark waiting as a no-op on primary objects', async () => {
+	const { state } = createState();
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {}, { readReplication: false });
+
+	await expect(object.runDrizzleQuery({
+		sql: 'select id from users',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		bookmark: 'client-bookmark',
+	})).resolves.toMatchObject({
+		bookmark: 'bookmark',
+		servedBy: 'primary',
+	});
+});
+
+test('query RPC requires bookmark waiting on replicas', async () => {
+	const { state } = createState({ primaryStub: {} });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {});
+
+	await expect(object.runDrizzleQuery({
+		sql: 'select id from users',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		bookmark: 'client-bookmark',
+	})).rejects.toThrow('D1 bookmark waiting is not available in this runtime');
 });
 
 test('object method RPC waits for bookmarks and returns updated bookmarks', async () => {

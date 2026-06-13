@@ -126,6 +126,9 @@ function createD1Helpers(ctx: DurableObjectState, dialect: SQLiteSyncDialect): D
 			if (bookmark) {
 				const storage = ctx.storage as D1ObjectStorage;
 				if (typeof storage.waitForBookmark !== 'function') {
+					if (!isD1ObjectReplica(ctx)) {
+						return;
+					}
 					throw new Error('D1 bookmark waiting is not available in this runtime');
 				}
 				await storage.waitForBookmark(bookmark);

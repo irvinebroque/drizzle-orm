@@ -191,6 +191,9 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 
 		const storage = this.ctx.storage as D1ObjectStorage;
 		if (typeof storage.waitForBookmark !== 'function') {
+			if (!this.isReplica()) {
+				return;
+			}
 			throw new Error('D1 bookmark waiting is not available in this runtime');
 		}
 		await storage.waitForBookmark(bookmark);
