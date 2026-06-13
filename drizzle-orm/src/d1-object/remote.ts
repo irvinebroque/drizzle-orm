@@ -45,7 +45,7 @@ export interface D1ObjectRemoteStub {
 
 export interface D1ObjectRemoteSessionController {
 	getBookmark(): string | undefined;
-	setBookmark(bookmark: string | null | undefined): void;
+	setBookmark(bookmark: string | null | undefined, sequence?: number): void;
 	getSequence?(): number | undefined;
 	enqueue<T>(operation: () => Promise<T>): Promise<T>;
 }
@@ -315,6 +315,7 @@ export class SQLiteD1ObjectRemotePreparedQuery<T extends PreparedQueryConfig = P
 				if (!this.client.runDrizzleQuery) {
 					throw new Error('D1 object stub does not implement runDrizzleQuery');
 				}
+				const sequence = this.controller.getSequence?.();
 
 				return await this.client.runDrizzleQuery({
 					sql: this.query.sql,
@@ -323,15 +324,16 @@ export class SQLiteD1ObjectRemotePreparedQuery<T extends PreparedQueryConfig = P
 					responseMode,
 					write: this.isWrite(),
 					bookmark: this.controller.getBookmark(),
-					sequence: this.controller.getSequence?.(),
+					sequence,
 					queryType: this.d1QueryMetadata?.type,
 					tables: this.d1QueryMetadata?.tables,
+				}).then((response) => {
+					if (response.bookmark !== undefined) {
+						this.controller.setBookmark(response.bookmark, sequence);
+					}
+					return response;
 				});
 			});
-
-			if (response.bookmark !== undefined) {
-				this.controller.setBookmark(response.bookmark);
-			}
 
 			return response;
 		});

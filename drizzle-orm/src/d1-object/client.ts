@@ -108,8 +108,18 @@ export function createD1ObjectSessionDatabase<
 	let bookmark = options.bookmark ?? undefined;
 	let pending = Promise.resolve();
 	let sequence = 0;
+	let bookmarkSequence = 0;
 	const remoteSession = stub.createDrizzleSession?.({ bookmark });
 	const nextSequence = () => remoteSession === undefined ? undefined : ++sequence;
+	const applyBookmark = (nextBookmark: string | null | undefined, nextBookmarkSequence?: number) => {
+		if (remoteSession !== undefined && nextBookmarkSequence !== undefined) {
+			if (nextBookmarkSequence < bookmarkSequence) {
+				return;
+			}
+			bookmarkSequence = nextBookmarkSequence;
+		}
+		bookmark = nextBookmark ?? undefined;
+	};
 
 	const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
 		if (remoteSession !== undefined) {
@@ -132,12 +142,13 @@ export function createD1ObjectSessionDatabase<
 
 			return (...args: unknown[]) => {
 				if (remoteSession !== undefined) {
+					const operationSequence = nextSequence();
 					return remoteSession.runDrizzleObjectMethod({
 						method: property,
 						args,
-						sequence: nextSequence(),
+						sequence: operationSequence,
 					}).then((response) => {
-						bookmark = response.bookmark;
+						applyBookmark(response.bookmark, operationSequence);
 						return response.value;
 					});
 				}
@@ -148,7 +159,7 @@ export function createD1ObjectSessionDatabase<
 						args,
 						bookmark,
 					});
-					bookmark = response.bookmark;
+					applyBookmark(response.bookmark);
 					return response.value;
 				});
 			};
@@ -159,8 +170,8 @@ export function createD1ObjectSessionDatabase<
 		getBookmark() {
 			return remoteSession === undefined ? bookmark : undefined;
 		},
-		setBookmark(nextBookmark) {
-			bookmark = nextBookmark ?? undefined;
+		setBookmark(nextBookmark, nextBookmarkSequence) {
+			applyBookmark(nextBookmark, nextBookmarkSequence);
 		},
 		getSequence: nextSequence,
 		enqueue,
@@ -175,13 +186,14 @@ export function createD1ObjectSessionDatabase<
 			return bookmark;
 		},
 		setBookmark(nextBookmark) {
-			bookmark = nextBookmark ?? undefined;
+			const operationSequence = nextSequence();
+			applyBookmark(nextBookmark, operationSequence);
 			if (remoteSession?.setBookmark) {
 				void remoteSession.setBookmark({
 					bookmark,
-					sequence: nextSequence(),
+					sequence: operationSequence,
 				}).then((response) => {
-					bookmark = response.bookmark;
+					applyBookmark(response.bookmark, operationSequence);
 				}, () => undefined);
 			}
 		},
