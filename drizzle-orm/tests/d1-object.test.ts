@@ -608,6 +608,87 @@ test('D1 object remote drizzle uses pipelined remote sessions when available', a
 	});
 });
 
+test('D1 object remote drizzle pipelines write/read Promise.all sessions', async () => {
+	let releaseWrite!: () => void;
+	let resolveWriteDone!: () => void;
+	let writeResolved = false;
+	const writeDone = new Promise<void>((resolve) => {
+		resolveWriteDone = resolve;
+	});
+	const sessionStarts: unknown[] = [];
+	const queryRequests: D1ObjectQueryRequest[] = [];
+	const db = drizzle<Record<string, never>, { users: typeof users }>({
+		async runDrizzleObjectMethod() {
+			throw new Error('fallback object method should not run');
+		},
+		async runDrizzleQuery() {
+			throw new Error('fallback query should not run');
+		},
+		createDrizzleSession(request) {
+			sessionStarts.push(request);
+			return {
+				async runDrizzleQuery(request) {
+					queryRequests.push(request);
+					if (request.write) {
+						await new Promise<void>((resolve) => {
+							releaseWrite = resolve;
+						});
+						resolveWriteDone();
+						return {
+							rows: [],
+							bookmark: 'write-bookmark',
+							servedBy: 'primary',
+						};
+					}
+					await writeDone;
+					return {
+						rows: [[1]],
+						bookmark: 'read-bookmark',
+						servedBy: 'replica',
+					};
+				},
+				async runDrizzleObjectMethod() {
+					throw new Error('object method should not run');
+				},
+			};
+		},
+	}, { schema: { users }, bookmark: 'initial-bookmark' });
+
+	const write = db.insert(users).values({ id: 1 }).run().then((result) => {
+		writeResolved = true;
+		return result;
+	});
+	const read = db.query.users.findMany();
+	const result = Promise.all([write, read]);
+
+	expect(sessionStarts).toEqual([{ bookmark: 'initial-bookmark' }]);
+	await vi.waitFor(() => {
+		expect(queryRequests).toHaveLength(2);
+	});
+	expect(writeResolved).toBe(false);
+	expect(queryRequests[0]).toMatchObject({
+		method: 'run',
+		responseMode: 'object',
+		write: true,
+		bookmark: undefined,
+		sequence: 1,
+		queryType: 'insert',
+		tables: ['users'],
+	});
+	expect(queryRequests[1]).toMatchObject({
+		method: 'values',
+		responseMode: 'array',
+		write: false,
+		bookmark: undefined,
+		sequence: 2,
+	});
+
+	releaseWrite();
+	const [, posts] = await result;
+	expect(posts).toEqual([{ id: 1 }]);
+	expect(db.d1.getBookmark()).toBe('read-bookmark');
+});
+
 test('D1 object session db marks writes for primary forwarding', async () => {
 	const requests: D1ObjectQueryRequest[] = [];
 	const session = createD1ObjectSession<Record<string, never>, { users: typeof users }>({

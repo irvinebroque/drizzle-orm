@@ -73,6 +73,13 @@ export async function fetch(request: Request, env: Env) {
 
 `db.d1.client` and `db.query` share bookmark state through a remote Durable Object session, so they can be mixed safely inside one request. The session preserves causal order while allowing independent RPC calls to be issued eagerly. Direct Drizzle writes are marked as writes in the query RPC and forward from replicas to the primary object. Multi-statement transactions should remain Durable Object methods so the whole transaction runs inside one object invocation.
 
+```ts
+const write = db.insert(posts).values({ title: 'hello' }).run();
+const read = db.query.posts.findMany();
+
+const [, posts] = await Promise.all([write, read]);
+```
+
 The lower-level `createD1ObjectSession()` helper remains available for code that prefers an explicit `{ client, db }` wrapper.
 
 The low-level `db.d1.waitForBookmark()` and `db.d1.getCurrentBookmark()` helpers on in-object databases remain available when an application needs custom bookmark handling.

@@ -118,4 +118,27 @@ test('remote Drizzle sessions run through a real Worker and Durable Object', asy
 			servedBy: 'primary',
 		}),
 	]);
+
+	const pipelined = await readJson<{ posts: Post[]; bookmark: string; events: QueryEvent[] }>(
+		await server.fetch('/pipelined', { method: 'POST' }),
+	);
+	expect(pipelined.posts).toEqual([
+		{ id: 1, title: 'first post' },
+		{ id: 2, title: 'second post' },
+		{ id: 3, title: 'from remote db' },
+		{ id: 4, title: 'hello' },
+	]);
+	expect(pipelined.bookmark).toEqual(expect.any(String));
+	expect(pipelined.events).toEqual([
+		expect.objectContaining({
+			method: 'run',
+			queryType: 'insert',
+			tables: ['posts'],
+			servedBy: 'primary',
+		}),
+		expect.objectContaining({
+			method: 'values',
+			servedBy: 'primary',
+		}),
+	]);
 });
