@@ -72,25 +72,26 @@ export const printConfigConnectionIssues = (
 		console.log(wrapParam('databaseId', options.databaseId));
 		console.log(wrapParam('token', options.token, false, 'secret'));
 		process.exit(1);
-	} else if (driver === 'durable-sqlite') {
+	} else if (driver === 'durable-sqlite' || driver === 'd1-object') {
+		const label = driver === 'd1-object' ? 'D1 application objects' : 'SQLite Durable Objects';
 		if (command === 'migrate') {
 			console.log(
 				error(
-					`You can't use 'migrate' command with SQLite Durable Objects`,
+					`You can't use 'migrate' command with ${label}; run generated SQL through a Durable Object method instead`,
 				),
 			);
 		} else if (command === 'studio') {
 			console.log(
 				error(
-					`You can't use 'studio' command with SQLite Durable Objects`,
+					`You can't use 'studio' command with ${label}`,
 				),
 			);
 		} else if (command === 'pull') {
-			console.log(error("You can't use 'pull' command with SQLite Durable Objects"));
+			console.log(error(`You can't use 'pull' command with ${label}`));
 		} else if (command === 'push') {
-			console.log(error("You can't use 'push' command with SQLite Durable Objects"));
+			console.log(error(`You can't use 'push' command with ${label}`));
 		} else {
-			console.log(error('Unexpected error with SQLite Durable Object driver 🤔'));
+			console.log(error(`Unexpected error with ${label} driver 🤔`));
 		}
 		process.exit(1);
 	} else {

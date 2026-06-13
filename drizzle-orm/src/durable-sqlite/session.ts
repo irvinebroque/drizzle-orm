@@ -166,8 +166,7 @@ export class SQLiteDOPreparedQuery<T extends PreparedQueryConfig = PreparedQuery
 			? this.client.sql.exec(this.query.sql, ...params)
 			: this.client.sql.exec(this.query.sql);
 
-		// @ts-ignore .raw().toArray() exists
-		return res.raw().toArray();
+		return Array.from(res.raw());
 	}
 
 	/** @internal */

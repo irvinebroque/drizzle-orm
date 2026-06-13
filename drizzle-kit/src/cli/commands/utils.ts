@@ -210,7 +210,7 @@ export const prepareGenerateConfig = async (
 		breakpoints: breakpoints ?? true,
 		schema: schema,
 		out: out || 'drizzle',
-		bundle: driver === 'expo' || driver === 'durable-sqlite',
+		bundle: driver === 'expo' || driver === 'durable-sqlite' || driver === 'd1-object',
 		casing,
 		driver,
 	};
