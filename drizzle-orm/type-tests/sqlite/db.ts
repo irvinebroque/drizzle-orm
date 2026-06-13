@@ -53,6 +53,7 @@ const d1ObjectRemoteDb = drizzleD1Object<TestD1Object, { users: typeof users }>(
 }, { schema: { users } });
 
 Expect<Equal<ReturnType<typeof d1ObjectRemoteDb.d1.client.listPosts>, Promise<{ id: number }[]>>>();
+Expect<Equal<'createDrizzleSession' extends keyof typeof d1ObjectRemoteDb.d1.client ? true : false, false>>();
 const d1ObjectRemoteUsers = d1ObjectRemoteDb.query.users.findMany();
 Expect<Equal<Awaited<typeof d1ObjectRemoteUsers>, { id: number | null }[]>>();
 

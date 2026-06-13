@@ -349,6 +349,213 @@ test('remote query session executes pipelined arrivals by sequence', async () =>
 	expect(waitForBookmark).toHaveBeenNthCalledWith(2, 'bookmark');
 });
 
+test('remote query session rejects duplicate and stale sequence numbers', async () => {
+	const { state, calls } = createState({ configureReadReplication: async () => {} });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {}, { readReplication: false });
+	const session = object.createDrizzleSession();
+
+	await session.runDrizzleQuery({
+		sql: 'select 1',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 1,
+	});
+	await expect(session.runDrizzleQuery({
+		sql: 'select stale',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 1,
+	})).rejects.toThrow('D1 object session received duplicate or stale sequence 1');
+
+	const third = session.runDrizzleQuery({
+		sql: 'select 3',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 3,
+	});
+	await expect(session.runDrizzleQuery({
+		sql: 'select duplicate',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 3,
+	})).rejects.toThrow('D1 object session received duplicate or stale sequence 3');
+
+	const second = session.runDrizzleQuery({
+		sql: 'select 2',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 2,
+	});
+	await Promise.all([second, third]);
+
+	expect(calls.map((call) => call.sql)).toEqual(['select 1', 'select 2', 'select 3']);
+});
+
+test('remote session applies ordered manual bookmarks before later queries', async () => {
+	const waitForBookmark = vi.fn(async () => {});
+	const { state, calls } = createState({
+		configureReadReplication: async () => {},
+		waitForBookmark,
+	});
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {}, { readReplication: false });
+	const session = object.createDrizzleSession({ bookmark: 'initial-bookmark' });
+
+	const query = session.runDrizzleQuery({
+		sql: 'select after manual bookmark',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 2,
+	});
+	await Promise.resolve();
+	expect(calls).toHaveLength(0);
+
+	await Promise.all([
+		session.setBookmark({ bookmark: 'manual-bookmark', sequence: 1 }),
+		query,
+	]);
+
+	expect(calls.map((call) => call.sql)).toEqual(['select after manual bookmark']);
+	expect(waitForBookmark).toHaveBeenCalledWith('manual-bookmark');
+});
+
+test('remote session forwards replica writes and carries primary bookmarks to reads', async () => {
+	const runDrizzleQuery = vi.fn(async (request: D1ObjectQueryRequest) => ({
+		rows: [],
+		bookmark: 'primary-bookmark',
+		servedBy: 'primary' as const,
+		forwarded: false,
+		request,
+	}));
+	const waitForBookmark = vi.fn(async () => {});
+	const { state, calls } = createState({
+		primaryStub: { runDrizzleQuery },
+		waitForBookmark,
+	});
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {});
+	const session = object.createDrizzleSession({ bookmark: 'client-bookmark' });
+
+	await expect(session.runDrizzleQuery({
+		sql: 'insert into users values (?)',
+		params: [1],
+		method: 'run',
+		responseMode: 'object',
+		write: true,
+		sequence: 1,
+	})).resolves.toMatchObject({
+		bookmark: 'primary-bookmark',
+		forwarded: true,
+	});
+	expect(runDrizzleQuery).toHaveBeenCalledWith({
+		sql: 'insert into users values (?)',
+		params: [1],
+		method: 'run',
+		responseMode: 'object',
+		write: true,
+		bookmark: 'client-bookmark',
+		sequence: 1,
+	});
+	expect(waitForBookmark).not.toHaveBeenCalled();
+
+	await session.runDrizzleQuery({
+		sql: 'select after primary write',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 2,
+	});
+	expect(calls.map((call) => call.sql)).toEqual(['select after primary write']);
+	expect(waitForBookmark).toHaveBeenCalledWith('primary-bookmark');
+});
+
+test('remote session serializes mixed method and query calls', async () => {
+	let releaseMethod: (() => void) | undefined;
+	const { state, calls } = createState({ configureReadReplication: async () => {} });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {
+		async slowMethod() {
+			await new Promise<void>((resolve) => {
+				releaseMethod = resolve;
+			});
+			return 'done';
+		}
+	}
+	const object = new TestObject(state, {}, { readReplication: false });
+	const session = object.createDrizzleSession();
+
+	const method = session.runDrizzleObjectMethod({
+		method: 'slowMethod',
+		args: [],
+		sequence: 1,
+	});
+	const query = session.runDrizzleQuery({
+		sql: 'select after method',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 2,
+	});
+
+	await vi.waitFor(() => {
+		expect(releaseMethod).toEqual(expect.any(Function));
+	});
+	expect(calls).toHaveLength(0);
+
+	releaseMethod?.();
+	await expect(method).resolves.toMatchObject({ value: 'done' });
+	await query;
+	expect(calls.map((call) => call.sql)).toEqual(['select after method']);
+});
+
+test('remote session continues after a sequenced operation rejects', async () => {
+	const { state, calls } = createState({ configureReadReplication: async () => {} });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {
+		async fail() {
+			throw new Error('boom');
+		}
+	}
+	const object = new TestObject(state, {}, { readReplication: false });
+	const session = object.createDrizzleSession();
+
+	const failed = session.runDrizzleObjectMethod({
+		method: 'fail',
+		args: [],
+		sequence: 1,
+	});
+	const query = session.runDrizzleQuery({
+		sql: 'select after failure',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+		sequence: 2,
+	});
+
+	await expect(failed).rejects.toThrow('boom');
+	await query;
+	expect(calls.map((call) => call.sql)).toEqual(['select after failure']);
+});
+
 test('object method RPC waits for bookmarks and returns updated bookmarks', async () => {
 	const waitForBookmark = vi.fn(async () => {});
 	const { state } = createState({ configureReadReplication: async () => {}, waitForBookmark });

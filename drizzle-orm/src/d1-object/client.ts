@@ -14,6 +14,7 @@ type AnyMethod = (...args: any[]) => any;
 type D1ObjectReservedMethod =
 	| 'runDrizzleObjectMethod'
 	| 'runDrizzleQuery'
+	| 'createDrizzleSession'
 	| 'applyDrizzleMigrations';
 
 type D1ObjectMethodKey<TObject> = {
