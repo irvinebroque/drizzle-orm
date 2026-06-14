@@ -40,11 +40,11 @@ export async function fetch(request: Request, env: Env) {
 }
 ```
 
-`drizzle()` sends the current bookmark with each remote method call, waits for that bookmark inside the object before running the method, and stores the updated bookmark returned by the object. Calls through one database are serialized to preserve causal order. Use a separate database when calls are intentionally independent.
+`drizzle()` creates a request-bound bookmark session. With `DrizzleD1Object` stubs, Drizzle uses the object's internal `createDrizzleSession()` RPC hook so method calls can be issued eagerly while the object executes them in causal order. The session sends the current bookmark with each call, waits for that bookmark inside the object before running application code, and stores the updated bookmark returned by the object. Custom stubs without `createDrizzleSession()` still work through the older local call queue. Use a separate database when calls are intentionally independent.
 
 ## Remote Drizzle sessions
 
-The remote database keeps Drizzle's normal query syntax while SQL still executes inside the Durable Object.
+The remote database keeps Drizzle's normal query syntax while SQL still executes inside the Durable Object. Extending `DrizzleD1Object` supplies the reserved query RPC handlers, so the object does not need to define CRUD methods for direct Drizzle queries.
 
 ```ts
 import { drizzle } from 'drizzle-orm/d1-object';
@@ -71,7 +71,9 @@ export async function fetch(request: Request, env: Env) {
 }
 ```
 
-`db.d1.client` and `db.query` share bookmark state through a remote Durable Object session, so they can be mixed safely inside one request. The session preserves causal order while allowing independent RPC calls to be issued eagerly. Direct Drizzle writes are marked as writes in the query RPC and forward from replicas to the primary object. Multi-statement transactions should remain Durable Object methods so the whole transaction runs inside one object invocation.
+`db.d1.client` and direct Drizzle queries share bookmark state through the same remote Durable Object session, so they can be mixed safely inside one request. The remote database compiles query-builder and relational-query calls into `runDrizzleQuery()` RPC envelopes. Reads wait for the current session bookmark and may run on the primary or a replica. Writes are marked with `write: true`; if the call lands on a replica, the object forwards it to the primary before executing the SQL.
+
+Calls are sequenced before awaiting their results, so independent promises can be pipelined through one request-bound session without losing causal order:
 
 ```ts
 const write = db.insert(posts).values({ title: 'hello' }).run();
@@ -80,7 +82,20 @@ const read = db.query.posts.findMany();
 const [, posts] = await Promise.all([write, read]);
 ```
 
+The read RPC can be sent before the write resolves, but the Durable Object session drains calls by sequence. The read still executes after the write and observes the bookmark produced by that write. Returned bookmarks are also applied by sequence on the Worker side, so a slower older response cannot roll `db.d1.getBookmark()` back behind a newer completed call.
+
+Sequential `await` code remains sequential:
+
+```ts
+await db.insert(posts).values({ title: 'hello' }).run();
+const posts = await db.query.posts.findMany();
+```
+
+Remote multi-statement transactions are intentionally unsupported. Put transactional workflows in named Durable Object methods and run `db.transaction()` inside the object so the whole transaction executes in one object invocation.
+
 The lower-level `createD1ObjectSession()` helper remains available for code that prefers an explicit `{ client, db }` wrapper.
+
+The internal `createDrizzleSession()` RPC hook is reserved for Drizzle and is not exposed on `db.d1.client`.
 
 The low-level `db.d1.waitForBookmark()` and `db.d1.getCurrentBookmark()` helpers on in-object databases remain available when an application needs custom bookmark handling.
 
