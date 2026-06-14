@@ -115,6 +115,19 @@ export default {
 				});
 			}
 
+			if (url.pathname === '/pipelined') {
+				const write = db.insert(posts).values({ title: 'hello' }).run();
+				const read = db.query.posts.findMany({
+					orderBy: (posts, { asc }) => [asc(posts.id)],
+				});
+				const [, rows] = await Promise.all([write, read]);
+				return json({
+					posts: rows,
+					bookmark: db.d1.getBookmark(),
+					events,
+				});
+			}
+
 			return json({ error: 'Not found' }, 404);
 		} catch (error) {
 			return json({

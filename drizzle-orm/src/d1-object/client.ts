@@ -1,16 +1,20 @@
 import { createD1ObjectRemoteDatabase, type DrizzleD1ObjectRemoteDatabase } from './remote.ts';
 import type {
+	D1ObjectBookmarkResponse,
 	D1ObjectMethodRequest,
 	D1ObjectMethodResponse,
 	D1ObjectQueryRequest,
 	D1ObjectQueryResponse,
 	D1ObjectRemoteDrizzleConfig,
+	D1ObjectSessionRequest,
+	D1ObjectSetBookmarkRequest,
 } from './types.ts';
 
 type AnyMethod = (...args: any[]) => any;
 type D1ObjectReservedMethod =
 	| 'runDrizzleObjectMethod'
 	| 'runDrizzleQuery'
+	| 'createDrizzleSession'
 	| 'applyDrizzleMigrations';
 
 type D1ObjectMethodKey<TObject> = {
@@ -26,6 +30,13 @@ export type D1ObjectSessionClient<TObject extends object> = {
 export interface D1ObjectSessionStub {
 	runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse>;
 	runDrizzleQuery?(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse>;
+	createDrizzleSession?(request: D1ObjectSessionRequest): D1ObjectRemoteSessionStub;
+}
+
+export interface D1ObjectRemoteSessionStub {
+	runDrizzleObjectMethod(request: D1ObjectMethodRequest): Promise<D1ObjectMethodResponse>;
+	runDrizzleQuery(request: D1ObjectQueryRequest): Promise<D1ObjectQueryResponse>;
+	setBookmark?(request: D1ObjectSetBookmarkRequest): Promise<D1ObjectBookmarkResponse>;
 }
 
 export interface D1ObjectSessionOptions<TSchema extends Record<string, unknown> = Record<string, never>>
@@ -96,8 +107,25 @@ export function createD1ObjectSessionDatabase<
 ): DrizzleD1ObjectSessionDatabase<TObject, TSchema, TClient> {
 	let bookmark = options.bookmark ?? undefined;
 	let pending = Promise.resolve();
+	let sequence = 0;
+	let bookmarkSequence = 0;
+	const remoteSession = stub.createDrizzleSession?.({ bookmark });
+	const nextSequence = () => remoteSession === undefined ? undefined : ++sequence;
+	const applyBookmark = (nextBookmark: string | null | undefined, nextBookmarkSequence?: number) => {
+		if (remoteSession !== undefined && nextBookmarkSequence !== undefined) {
+			if (nextBookmarkSequence < bookmarkSequence) {
+				return;
+			}
+			bookmarkSequence = nextBookmarkSequence;
+		}
+		bookmark = nextBookmark ?? undefined;
+	};
 
 	const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+		if (remoteSession !== undefined) {
+			return operation();
+		}
+
 		const call = pending.then(operation);
 		pending = call.then(
 			() => undefined,
@@ -113,26 +141,39 @@ export function createD1ObjectSessionDatabase<
 			}
 
 			return (...args: unknown[]) => {
+				if (remoteSession !== undefined) {
+					const operationSequence = nextSequence();
+					return remoteSession.runDrizzleObjectMethod({
+						method: property,
+						args,
+						sequence: operationSequence,
+					}).then((response) => {
+						applyBookmark(response.bookmark, operationSequence);
+						return response.value;
+					});
+				}
+
 				return enqueue(async () => {
 					const response = await stub.runDrizzleObjectMethod({
 						method: property,
 						args,
 						bookmark,
 					});
-					bookmark = response.bookmark;
+					applyBookmark(response.bookmark);
 					return response.value;
 				});
 			};
 		},
 	}) as D1ObjectSessionClient<TObject>;
 
-	const db = createD1ObjectRemoteDatabase(stub, {
+	const db = createD1ObjectRemoteDatabase(remoteSession ?? stub, {
 		getBookmark() {
-			return bookmark;
+			return remoteSession === undefined ? bookmark : undefined;
 		},
-		setBookmark(nextBookmark) {
-			bookmark = nextBookmark ?? undefined;
+		setBookmark(nextBookmark, nextBookmarkSequence) {
+			applyBookmark(nextBookmark, nextBookmarkSequence);
 		},
+		getSequence: nextSequence,
 		enqueue,
 	}, options);
 
@@ -145,7 +186,16 @@ export function createD1ObjectSessionDatabase<
 			return bookmark;
 		},
 		setBookmark(nextBookmark) {
-			bookmark = nextBookmark ?? undefined;
+			const operationSequence = nextSequence();
+			applyBookmark(nextBookmark, operationSequence);
+			if (remoteSession?.setBookmark) {
+				void remoteSession.setBookmark({
+					bookmark,
+					sequence: operationSequence,
+				}).then((response) => {
+					applyBookmark(response.bookmark, operationSequence);
+				}, () => undefined);
+			}
 		},
 	};
 

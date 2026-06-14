@@ -39,6 +39,19 @@ export interface D1ObjectRemoteDrizzleConfig<TSchema extends Record<string, unkn
 	onQuery?: (event: D1ObjectQueryEvent) => void;
 }
 
+export interface D1ObjectSessionRequest {
+	bookmark?: string | null;
+}
+
+export interface D1ObjectSetBookmarkRequest {
+	bookmark?: string | null;
+	sequence?: number;
+}
+
+export interface D1ObjectBookmarkResponse {
+	bookmark?: string;
+}
+
 export interface D1ObjectHelpers {
 	/** True when this object instance is a read replica. */
 	isReplica(): boolean;
@@ -67,6 +80,7 @@ export interface D1ObjectQueryRequest {
 	responseMode: 'object' | 'array';
 	write: boolean;
 	bookmark?: string | null;
+	sequence?: number;
 	tables?: string[];
 	queryType?: 'select' | 'insert' | 'update' | 'delete';
 }
@@ -84,6 +98,7 @@ export interface D1ObjectMethodRequest {
 	method: string;
 	args: unknown[];
 	bookmark?: string | null;
+	sequence?: number;
 }
 
 export interface D1ObjectMethodResponse<T = unknown> {
