@@ -13,6 +13,12 @@ import type { SQLWrapper } from '~/sql/sql.ts';
 import { sql } from '~/sql/sql.ts';
 import { BaseSQLiteDatabase } from '~/sqlite-core/db.ts';
 import { SQLiteSyncDialect } from '~/sqlite-core/dialect.ts';
+import {
+	createD1ObjectSessionDatabase,
+	type D1ObjectSessionOptions,
+	type D1ObjectSessionStub,
+	type DrizzleD1ObjectSessionDatabase,
+} from './client.ts';
 import { SQLiteD1ObjectSession } from './session.ts';
 import { isD1ObjectReplica } from './setup.ts';
 import type { D1ObjectDrizzleConfig, D1ObjectHelpers, D1ObjectState, D1ObjectStorage } from './types.ts';
@@ -29,32 +35,57 @@ export class DrizzleD1ObjectDatabase<
 	declare readonly d1: D1ObjectHelpers;
 }
 
+/** Create a remote Drizzle client for a D1 application object stub. */
+export function drizzle<
+	TObject extends object = Record<string, never>,
+	TSchema extends Record<string, unknown> = Record<string, never>,
+	TClient extends D1ObjectSessionStub = D1ObjectSessionStub,
+>(
+	client: TClient,
+	config?: D1ObjectSessionOptions<TSchema>,
+): DrizzleD1ObjectSessionDatabase<TObject, TSchema, TClient>;
+
 /** Create a Drizzle client for SQL running inside a D1 application object. */
 export function drizzle<
 	TSchema extends Record<string, unknown> = Record<string, never>,
 	TClient extends DurableObjectState = DurableObjectState,
 >(
 	client: TClient,
-	config: D1ObjectDrizzleConfig<TSchema> = {},
+	config?: D1ObjectDrizzleConfig<TSchema>,
 ): DrizzleD1ObjectDatabase<TSchema> & {
 	$client: TClient;
-} {
-	const dialect = new SQLiteSyncDialect({ casing: config.casing });
+};
+
+export function drizzle<
+	TSchema extends Record<string, unknown> = Record<string, never>,
+>(
+	client: DurableObjectState | D1ObjectSessionStub,
+	config: D1ObjectDrizzleConfig<TSchema> | D1ObjectSessionOptions<TSchema> = {},
+):
+	| (DrizzleD1ObjectDatabase<TSchema> & { $client: DurableObjectState })
+	| DrizzleD1ObjectSessionDatabase<Record<string, never>, TSchema>
+{
+	if (isD1ObjectSessionStub(client)) {
+		return createD1ObjectSessionDatabase(client, config);
+	}
+
+	const localConfig = config as D1ObjectDrizzleConfig<TSchema>;
+	const dialect = new SQLiteSyncDialect({ casing: localConfig.casing });
 	let logger;
-	if (config.logger === true) {
+	if (localConfig.logger === true) {
 		logger = new DefaultLogger();
-	} else if (config.logger !== false) {
-		logger = config.logger;
+	} else if (localConfig.logger !== false) {
+		logger = localConfig.logger;
 	}
 
 	let schema: RelationalSchemaConfig<TablesRelationalConfig> | undefined;
-	if (config.schema) {
+	if (localConfig.schema) {
 		const tablesConfig = extractTablesRelationalConfig(
-			config.schema,
+			localConfig.schema,
 			createTableRelationsHelpers,
 		);
 		schema = {
-			fullSchema: config.schema,
+			fullSchema: localConfig.schema,
 			schema: tablesConfig.tables,
 			tableNamesMap: tablesConfig.tableNamesMap,
 		};
@@ -62,14 +93,18 @@ export function drizzle<
 
 	const session = new SQLiteD1ObjectSession(client, dialect, schema, {
 		logger,
-		replicaWrites: config.replicaWrites,
-		onQuery: config.onQuery,
+		replicaWrites: localConfig.replicaWrites,
+		onQuery: localConfig.onQuery,
 	});
 	const db = new DrizzleD1ObjectDatabase('sync', dialect, session, schema) as DrizzleD1ObjectDatabase<TSchema>;
 	(<any> db).$client = client;
 	(<any> db).d1 = createD1Helpers(client, dialect);
 
 	return db as any;
+}
+
+function isD1ObjectSessionStub(client: DurableObjectState | D1ObjectSessionStub): client is D1ObjectSessionStub {
+	return typeof (client as D1ObjectSessionStub).runDrizzleObjectMethod === 'function';
 }
 
 // Raw SQL is write-classified by default. These helpers are explicit read intent.
@@ -91,6 +126,9 @@ function createD1Helpers(ctx: DurableObjectState, dialect: SQLiteSyncDialect): D
 			if (bookmark) {
 				const storage = ctx.storage as D1ObjectStorage;
 				if (typeof storage.waitForBookmark !== 'function') {
+					if (!isD1ObjectReplica(ctx)) {
+						return;
+					}
 					throw new Error('D1 bookmark waiting is not available in this runtime');
 				}
 				await storage.waitForBookmark(bookmark);
