@@ -195,8 +195,26 @@ test('generate #9', async (t) => {
 	});
 });
 
+test('generate #10', async (t) => {
+	const res = await brotest(generate, '--config=d1-object.config.ts');
+	assert.equal(res.type, 'handler');
+	if (res.type !== 'handler') assert.fail(res.type, 'handler');
+	expect(res.options).toStrictEqual({
+		dialect: 'sqlite',
+		name: undefined,
+		custom: false,
+		prefix: 'index',
+		breakpoints: true,
+		schema: './schema.ts',
+		out: 'drizzle',
+		bundle: true,
+		casing: undefined,
+		driver: 'd1-object',
+	});
+});
+
 // cli | pass through name, prefix and custom
-test('generate #9', async (t) => {
+test('generate #11', async (t) => {
 	const res = await brotest(
 		generate,
 		'--dialect=postgresql --schema=schema.ts --out=out --prefix=timestamp --name=custom --custom',

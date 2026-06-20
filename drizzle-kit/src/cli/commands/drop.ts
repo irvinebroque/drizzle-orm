@@ -4,15 +4,18 @@ import fs from 'fs';
 import { render } from 'hanji';
 import { join } from 'path';
 import { Journal } from '../../utils';
+import type { Driver } from '../validations/common';
 import { DropMigrationView } from '../views';
 import { embeddedMigrations } from './migrate';
 
 export const dropMigration = async ({
 	out,
 	bundle,
+	driver,
 }: {
 	out: string;
 	bundle: boolean;
+	driver?: Driver;
 }) => {
 	const metaFilePath = join(out, 'meta', '_journal.json');
 	const journal = JSON.parse(readFileSync(metaFilePath, 'utf-8')) as Journal;
@@ -46,7 +49,7 @@ export const dropMigration = async ({
 	if (bundle) {
 		fs.writeFileSync(
 			join(out, `migrations.js`),
-			embeddedMigrations(resultJournal),
+			embeddedMigrations(resultJournal, driver),
 		);
 	}
 
