@@ -135,12 +135,21 @@ function createD1Helpers(ctx: DurableObjectState, dialect: SQLiteSyncDialect): D
 			}
 		},
 		getCurrentBookmark() {
+			if (typeof ctx.storage.getCurrentBookmark !== 'function') {
+				return Promise.resolve(undefined);
+			}
 			return ctx.storage.getCurrentBookmark();
 		},
 		getBookmarkForTime(timestamp) {
+			if (typeof ctx.storage.getBookmarkForTime !== 'function') {
+				return Promise.resolve(undefined);
+			}
 			return ctx.storage.getBookmarkForTime(timestamp);
 		},
 		onNextSessionRestoreBookmark(bookmark) {
+			if (typeof ctx.storage.onNextSessionRestoreBookmark !== 'function') {
+				return Promise.resolve(bookmark);
+			}
 			return ctx.storage.onNextSessionRestoreBookmark(bookmark);
 		},
 		readAll<T = unknown>(query: SQLWrapper | string): T[] {

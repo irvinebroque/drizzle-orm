@@ -38,10 +38,7 @@ export function setupD1Object(ctx: DurableObjectState, config: D1ObjectRuntimeCo
 			return;
 		}
 
-		if (typeof d1Ctx.configureReadReplication !== 'function') {
-			throw new Error('D1 read replication is not available in this runtime');
-		}
-		await d1Ctx.configureReadReplication({ mode: readReplication.mode });
+		await configureD1ReadReplicationIfAvailable(d1Ctx, readReplication.mode);
 	});
 }
 

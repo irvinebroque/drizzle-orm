@@ -187,10 +187,8 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 		await this.waitForD1ObjectBookmark(request.bookmark);
 
 		const value = await method.apply(this, request.args);
-		return {
-			value,
-			bookmark: await this.ctx.storage.getCurrentBookmark(),
-		};
+		const bookmark = await getCurrentBookmarkIfAvailable(this.ctx);
+		return bookmark === undefined ? { value } : { value, bookmark };
 	}
 
 	createDrizzleSession(request: D1ObjectSessionRequest = {}): DrizzleD1ObjectRemoteSession {
@@ -302,9 +300,20 @@ export abstract class DrizzleD1Object<Env = unknown> extends DurableObject<Env> 
 	}
 
 	private async withQueryBookmark(response: D1ObjectQueryResponse): Promise<D1ObjectQueryResponse> {
+		const bookmark = await getCurrentBookmarkIfAvailable(this.ctx);
 		return {
 			...response,
-			bookmark: await this.ctx.storage.getCurrentBookmark(),
+			...(bookmark === undefined ? {} : { bookmark }),
 		};
 	}
+}
+
+async function getCurrentBookmarkIfAvailable(ctx: DurableObjectState): Promise<string | undefined> {
+	const storage = ctx.storage as DurableObjectStorage & {
+		getCurrentBookmark?: () => Promise<string> | string;
+	};
+	if (typeof storage.getCurrentBookmark !== 'function') {
+		return undefined;
+	}
+	return await storage.getCurrentBookmark();
 }

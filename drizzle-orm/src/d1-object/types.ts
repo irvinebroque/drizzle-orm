@@ -60,8 +60,8 @@ export interface D1ObjectHelpers {
 	/** Wait until this object has observed a bookmark. */
 	waitForBookmark(bookmark: string | null | undefined): Promise<void>;
 	/** Return a bookmark for this object's current storage state. */
-	getCurrentBookmark(): Promise<string>;
-	getBookmarkForTime(timestamp: number | Date): Promise<string>;
+	getCurrentBookmark(): Promise<string | undefined>;
+	getBookmarkForTime(timestamp: number | Date): Promise<string | undefined>;
 	onNextSessionRestoreBookmark(bookmark: string): Promise<string>;
 	/** Execute caller-declared read-only raw SQL on primary or replica. */
 	readAll<T = unknown>(query: SQLWrapper | string): T[];
@@ -103,7 +103,7 @@ export interface D1ObjectMethodRequest {
 
 export interface D1ObjectMethodResponse<T = unknown> {
 	value: T;
-	bookmark: string;
+	bookmark?: string;
 }
 
 export interface D1ObjectMigrationConfig {

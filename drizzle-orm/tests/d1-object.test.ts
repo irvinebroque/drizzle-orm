@@ -62,6 +62,7 @@ function createState(options: {
 	rawRows?: SqlStorageValue[][];
 	configureReadReplication?: (config: { mode: 'auto' | 'disabled' }) => Promise<void>;
 	waitForBookmark?: (bookmark: string) => Promise<void>;
+	bookmarkApis?: false;
 } = {}) {
 	const calls: { sql: string; params: unknown[] }[] = [];
 	const state = {
@@ -77,10 +78,12 @@ function createState(options: {
 			transactionSync<T>(callback: () => T): T {
 				return callback();
 			},
-			getCurrentBookmark: async () => 'bookmark',
-			getBookmarkForTime: async () => 'bookmark-at-time',
-			onNextSessionRestoreBookmark: async () => 'restore-bookmark',
 			waitForBookmark: options.waitForBookmark,
+			...(options.bookmarkApis === false ? {} : {
+				getCurrentBookmark: async () => 'bookmark',
+				getBookmarkForTime: async () => 'bookmark-at-time',
+				onNextSessionRestoreBookmark: async () => 'restore-bookmark',
+			}),
 		},
 		blockConcurrencyWhile(callback: () => Promise<unknown>) {
 			void callback();
@@ -128,6 +131,20 @@ test('setupD1Object tolerates missing read replication API when disabled', () =>
 	} as unknown as DurableObjectState;
 
 	expect(() => setupD1Object(state, { readReplication: false })).not.toThrow();
+});
+
+test('setupD1Object tolerates missing read replication API by default', async () => {
+	let setup = Promise.resolve<unknown>(undefined);
+	const state = {
+		blockConcurrencyWhile(callback: () => Promise<unknown>) {
+			setup = callback();
+			return setup;
+		},
+	} as unknown as DurableObjectState;
+
+	setupD1Object(state);
+
+	await expect(setup).resolves.toBeUndefined();
 });
 
 test('raw writes expose typed replica write errors through wrapped causes', () => {
@@ -189,6 +206,14 @@ test('bookmark helper tolerates missing bookmark waiting on primary objects only
 	await expect(replica.d1.waitForBookmark('client-bookmark')).rejects.toThrow(
 		'D1 bookmark waiting is not available in this runtime',
 	);
+});
+
+test('bookmark getters tolerate missing runtime bookmark APIs', async () => {
+	const db = drizzle(createState({ bookmarkApis: false }).state);
+
+	await expect(db.d1.getCurrentBookmark()).resolves.toBeUndefined();
+	await expect(db.d1.getBookmarkForTime(new Date())).resolves.toBeUndefined();
+	await expect(db.d1.onNextSessionRestoreBookmark('client-bookmark')).resolves.toBe('client-bookmark');
 });
 
 test('D1 object mutation SQL detection skips comments and allows reads', () => {
@@ -293,6 +318,26 @@ test('query RPC treats missing bookmark waiting as a no-op on primary objects', 
 		bookmark: 'bookmark',
 		servedBy: 'primary',
 	});
+});
+
+test('query RPC omits bookmarks when current bookmark API is missing', async () => {
+	const { state } = createState({ bookmarkApis: false });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {}
+	const object = new TestObject(state, {}, { readReplication: false });
+
+	const result = await object.runDrizzleQuery({
+		sql: 'select id from users',
+		params: [],
+		method: 'all',
+		responseMode: 'object',
+		write: false,
+	});
+
+	expect(result).toMatchObject({
+		servedBy: 'primary',
+	});
+	expect(result).not.toHaveProperty('bookmark');
 });
 
 test('query RPC requires bookmark waiting on replicas', async () => {
@@ -577,6 +622,26 @@ test('object method RPC waits for bookmarks and returns updated bookmarks', asyn
 	expect(result).toEqual({
 		value: [{ id: 10 }],
 		bookmark: 'bookmark',
+	});
+});
+
+test('object method RPC omits bookmarks when current bookmark API is missing', async () => {
+	const { state } = createState({ bookmarkApis: false });
+	const { DrizzleD1Object } = await import('~/d1-object/object.ts');
+	class TestObject extends DrizzleD1Object<Record<string, never>> {
+		async listPosts(limit: number) {
+			return [{ id: limit }];
+		}
+	}
+	const object = new TestObject(state, {}, { readReplication: false });
+
+	const result = await object.runDrizzleObjectMethod({
+		method: 'listPosts',
+		args: [10],
+	});
+
+	expect(result).toEqual({
+		value: [{ id: 10 }],
 	});
 });
 
